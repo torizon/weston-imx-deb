@@ -30,7 +30,7 @@ Vcs-Git: git://git.debian.org/git/pkg-xorg/wayland/weston
 Vcs-Browser: http://git.debian.org/?p=pkg-xorg/wayland/weston.git
 
 Package: weston
-Architecture: any
+Architecture: linux-any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
