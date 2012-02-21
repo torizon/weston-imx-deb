@@ -1,4 +1,4 @@
-weston (0.85.0-1) UNRELEASED; urgency=low
+weston (0.85.0-1) experimental; urgency=low
 
   * Initial release (Closes: #630809).
   * Build without setuid for weston; it's very young and experimental, so
@@ -10,4 +10,4 @@ weston (0.85.0-1) UNRELEASED; urgency=low
     generated dependencies: libegl1-mesa, libegl1-mesa-drivers, and
     libgles2-mesa.
 
- -- Cyril Brulebois <kibi@debian.org>  Tue, 21 Feb 2012 18:26:23 +0100
+ -- Cyril Brulebois <kibi@debian.org>  Tue, 21 Feb 2012 23:58:19 +0100
