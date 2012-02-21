@@ -8,6 +8,21 @@ Build-Depends:
  quilt,
  dh-autoreconf,
  pkg-config,
+ libpixman-1-dev,
+ libpng-dev,
+ libjpeg-dev,
+ mesa-common-dev,
+ libegl1-mesa-dev,
+ libgles2-mesa-dev,
+ libxcb1-dev,
+ libxcb-xfixes0-dev,
+ libx11-xcb-dev,
+ libx11-dev,
+ libudev-dev,
+ libgbm-dev,
+ libxkbcommon-dev,
+ libcairo2-dev,
+ libgdk-pixbuf2.0-dev,
 Standards-Version: 3.9.2
 Vcs-Git: git://git.debian.org/git/pkg-xorg/wayland/weston
 Vcs-Browser: http://git.debian.org/?p=pkg-xorg/wayland/weston.git
