@@ -6,5 +6,8 @@ weston (0.85.0-1) UNRELEASED; urgency=low
   * Document weston's setuid bit (or lack thereof) in README.Debian.
   * Tiny/toy clients will be shipped in a later upload.
   * Restrict to linux-any since wayland isn't as portable as X.
+  * Make sure the following packages are at least at 8.0-2 in the
+    generated dependencies: libegl1-mesa, libegl1-mesa-drivers, and
+    libgles2-mesa.
 
  -- Cyril Brulebois <kibi@debian.org>  Tue, 21 Feb 2012 18:26:23 +0100
