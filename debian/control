@@ -22,7 +22,7 @@ Build-Depends:
  libx11-dev,
  libudev-dev,
  libgbm-dev,
- libxkbcommon-dev,
+ libxkbcommon-dev (>= 0.1.0~2),
  libcairo2-dev,
  libgdk-pixbuf2.0-dev,
  libxcursor-dev,
