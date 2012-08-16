@@ -1,3 +1,9 @@
+weston (0.95.0-1) UNRELEASED; urgency=low
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Aug 2012 20:52:23 +0300
+
 weston (0.85.0-1) experimental; urgency=low
 
   * Initial release (Closes: #630809).
