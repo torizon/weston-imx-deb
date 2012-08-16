@@ -4,6 +4,7 @@ weston (0.95.0-1) UNRELEASED; urgency=low
   * Add a watch file.
   * control: Add missing build-depends: libmtdev-dev, libxcursor-dev,
     libpam0g-dev, libvpx-dev.
+  * Switch to source format 3.0 (quilt) due to xz tarballs.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Aug 2012 20:52:23 +0300
 
