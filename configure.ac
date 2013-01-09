@@ -1,6 +1,6 @@
 AC_PREREQ([2.64])
 AC_INIT([weston],
-        [0.95.0],
+        [1.0.3],
         [https://bugs.freedesktop.org/enter_bug.cgi?product=weston],
         [weston],
         [http://wayland.freedesktop.org/])
@@ -14,6 +14,7 @@ AM_SILENT_RULES([yes])
 # Check for programs
 AC_PROG_CC
 AC_PROG_CXX
+AC_PROG_SED
 
 # Initialize libtool
 LT_PREREQ([2.2])
@@ -97,15 +98,6 @@ if test x$enable_drm_compositor = xyes; then
 fi
 
 
-AC_ARG_ENABLE(openwfd-compositor, [  --enable-openwfd-compositor],,
-	      enable_openwfd_compositor=no)
-AM_CONDITIONAL(ENABLE_OPENWFD_COMPOSITOR, test x$enable_openwfd_compositor = xyes)
-if test x$enable_openwfd_compositor = xyes; then
-  AC_DEFINE([BUILD_OPENWFD_COMPOSITOR], [1], [Build the OpenWF compositor])
-  PKG_CHECK_MODULES(OPENWFD_COMPOSITOR, [openwfd gbm])
-fi
-
-
 AC_ARG_ENABLE(wayland-compositor, [  --enable-wayland-compositor],,
 	      enable_wayland_compositor=yes)
 AM_CONDITIONAL(ENABLE_WAYLAND_COMPOSITOR,
@@ -124,15 +116,17 @@ AC_ARG_ENABLE(android-compositor,
 AM_CONDITIONAL(ENABLE_ANDROID_COMPOSITOR, test x$enable_android_compositor = xyes)
 if test x$enable_android_compositor = xyes; then
   AC_DEFINE([BUILD_ANDROID_COMPOSITOR], [1], [Build the compositor for Android 4.0])
+  PKG_CHECK_MODULES(ANDROID_COMPOSITOR, [mtdev >= 1.1.0])
 fi
 
-
-AC_ARG_WITH(cairo-glesv2, AS_HELP_STRING([--with-cairo-glesv2],
-              [Use GLESv2 cairo instead of full GL]),
-              [cairo_modules="cairo-glesv2"],
-              [cairo_modules="cairo-gl"])
-if test x$cairo_modules = xcairo-glesv2; then
+AC_ARG_WITH(cairo-glesv2,
+            AS_HELP_STRING([--with-cairo-glesv2],
+                           [Use GLESv2 cairo instead of full GL]))
+if test "x$with_cairo_glesv2" = "xyes"; then
+  cairo_modules="cairo-glesv2"
   AC_DEFINE([USE_CAIRO_GLESV2], [1], [Use the GLESv2 GL cairo backend])
+else
+  cairo_modules="cairo-gl"
 fi
 
 PKG_CHECK_MODULES(PIXMAN, [pixman-1])
@@ -141,28 +135,33 @@ PKG_CHECK_MODULES(WEBP, [libwebp], [have_webp=yes], [have_webp=no])
 AS_IF([test "x$have_webp" = "xyes"],
       [AC_DEFINE([HAVE_WEBP], [1], [Have webp])])
 
-PKG_CHECK_MODULES(CAIRO, [cairo])
-SHARED_LIBS="$CAIRO_LIBS $PIXMAN_LIBS $PNG_LIBS $WEBP_LIBS"
-SHARED_CFLAGS="$CAIRO_CFLAGS $PIXMAN_CFLAGS $PNG_CFLAGS $WEBP_CFLAGS"
-AC_SUBST(SHARED_LIBS)
-AC_SUBST(SHARED_CFLAGS)
-
 AC_CHECK_LIB([jpeg], [jpeg_CreateDecompress], have_jpeglib=yes)
 if test x$have_jpeglib = xyes; then
-  IMAGE_LIBS="$IMAGE_LIBS -ljpeg"
+  JPEG_LIBS="-ljpeg"
 else
   AC_ERROR([libjpeg not found])
 fi
+AC_SUBST(JPEG_LIBS)
 
-COMPOSITOR_LIBS="$COMPOSITOR_LIBS $IMAGE_LIBS"
-COMPOSITOR_CFLAGS="$COMPOSITOR_CFLAGS $IMAGE_CFLAGS"
+PKG_CHECK_MODULES(CAIRO, [cairo])
 
-AC_ARG_ENABLE(simple-clients, [  --enable-simple-clients],, enable_simple_clients=yes)
-AM_CONDITIONAL(BUILD_SIMPLE_CLIENTS, test x$enable_simple_clients = xyes)
+AC_ARG_ENABLE(simple-clients,
+              AS_HELP_STRING([--disable-simple-clients],
+                             [do not build the simple wl_shm clients]),,
+              enable_simple_clients=yes)
+AM_CONDITIONAL(BUILD_SIMPLE_CLIENTS, test "x$enable_simple_clients" = "xyes")
 if test x$enable_simple_clients = xyes; then
-  AC_DEFINE([BUILD_SIMPLE_CLIENTS], [1], [Build the Wayland simple clients])
-  PKG_CHECK_MODULES(SIMPLE_CLIENT,
-                    [egl >= 7.10 glesv2 wayland-client wayland-egl])
+  PKG_CHECK_MODULES(SIMPLE_CLIENT, [wayland-client])
+fi
+
+AC_ARG_ENABLE(simple-egl-clients,
+              AS_HELP_STRING([--disable-simple-egl-clients],
+                             [do not build the simple EGL clients]),,
+              enable_simple_egl_clients=yes)
+AM_CONDITIONAL(BUILD_SIMPLE_EGL_CLIENTS, test "x$enable_simple_egl_clients" = "xyes")
+if test x$enable_simple_egl_clients = xyes; then
+  PKG_CHECK_MODULES(SIMPLE_EGL_CLIENT,
+                    [egl >= 7.10 glesv2 wayland-client wayland-egl wayland-cursor])
 fi
 
 AC_ARG_ENABLE(clients, [  --enable-clients],, enable_clients=yes)
@@ -170,18 +169,16 @@ AM_CONDITIONAL(BUILD_CLIENTS, test x$enable_clients = xyes)
 if test x$enable_clients = xyes; then
   AC_DEFINE([BUILD_CLIENTS], [1], [Build the Wayland clients])
 
-  PKG_CHECK_MODULES(CLIENT, [wayland-client wayland-egl egl >= 7.10 cairo >= 1.10.0 xkbcommon wayland-cursor])
-
-  CLIENT_CFLAGS="$CLIENT_CFLAGS $IMAGE_CFLAGS"
-  CLIENT_LIBS="$CLIENT_LIBS $IMAGE_LIBS"
+  PKG_CHECK_MODULES(CLIENT, [wayland-client cairo >= 1.10.0 xkbcommon wayland-cursor])
+  PKG_CHECK_MODULES(WESTON_INFO, [wayland-client])
 
   PKG_CHECK_MODULES(POPPLER, [poppler-glib glib-2.0 gobject-2.0 gio-2.0 ],
 			     [have_poppler=yes], [have_poppler=no])
-  PKG_CHECK_MODULES(CAIRO_EGL, [cairo-egl >= 1.11.3 $cairo_modules],
+  PKG_CHECK_MODULES(CAIRO_EGL, [wayland-egl egl >= 7.10 cairo-egl >= 1.11.3 $cairo_modules],
 		    [have_cairo_egl=yes], [have_cairo_egl=no])
   AS_IF([test "x$have_cairo_egl" = "xyes"],
         [AC_DEFINE([HAVE_CAIRO_EGL], [1], [Have cairo-egl])],
-        [AC_MSG_WARN([Cairo-EGL not found - clients will use cairo image])])
+        [AC_MSG_WARN([clients will use cairo image, cairo-egl not used because $CAIRO_EGL_PKG_ERRORS])])
 fi
 
 AC_ARG_ENABLE(weston-launch, [  --enable-weston-launch],, enable_weston_launch=yes)
@@ -200,6 +197,10 @@ if test x$enable_weston_launch == xyes; then
   WESTON_LAUNCH_LIBS="$WESTON_LAUNCH_LIBS -lpam"
 fi
 
+PKG_CHECK_MODULES(GLU, [glu], [have_glu=yes], [have_glu=no])
+AM_CONDITIONAL(HAVE_GLU, test "x$have_glu" = "xyes")
+
+
 AM_CONDITIONAL(HAVE_POPPLER, test "x$have_poppler" = "xyes")
 
 AM_CONDITIONAL(BUILD_FULL_GL_CLIENTS,
@@ -207,10 +208,12 @@ AM_CONDITIONAL(BUILD_FULL_GL_CLIENTS,
 
 AM_CONDITIONAL(ENABLE_DESKTOP_SHELL, true)
 
-AC_ARG_ENABLE(tablet-shell, [  --enable-tablet-shell],,
+AC_ARG_ENABLE(tablet-shell,
+              AS_HELP_STRING([--disable-tablet-shell],
+                             [do not build tablet-shell server plugin and client]),,
 	      enable_tablet_shell=yes)
 AM_CONDITIONAL(ENABLE_TABLET_SHELL,
-	       test x$enable_tablet_shell = xyes)
+	       test "x$enable_tablet_shell" = "xyes")
 
 
 AC_ARG_ENABLE(wcap-tools, [  --disable-wcap-tools],, enable_wcap_tools=yes)
@@ -224,6 +227,8 @@ fi
 AC_CHECK_PROG(RSVG_CONVERT, rsvg-convert, rsvg-convert)
 AM_CONDITIONAL(HAVE_RSVG_CONVERT, test -n "$RSVG_CONVERT")
 
+PKG_CHECK_MODULES(SETBACKLIGHT, [libudev libdrm], enable_setbacklight=yes, enable_setbacklight=no)
+AM_CONDITIONAL(BUILD_SETBACKLIGHT, test "x$enable_setbacklight" = "xyes")
 
 if test "x$GCC" = "xyes"; then
 	my_common_gcc_flags="-Wall -Wextra -Wno-unused-parameter \
@@ -245,5 +250,6 @@ AC_CONFIG_FILES([Makefile
 		 wcap/Makefile
 		 data/Makefile
 		 protocol/Makefile
+		 man/Makefile
 		 tests/Makefile])
 AC_OUTPUT

@@ -58,6 +58,9 @@ struct gears {
 	int last_x, last_y;
 
 	GLint gear_list[3];
+	int fullscreen;
+	int frames;
+	uint32_t last_fps;
 };
 
 struct gear_template {
@@ -202,9 +205,32 @@ make_gear(const struct gear_template *t)
 }
 
 static void
+update_fps(struct gears *gears, uint32_t time)
+{
+	long diff_ms;
+
+	gears->frames++;
+
+	diff_ms = time - gears->last_fps;
+
+	if (diff_ms > 5000) {
+		float seconds = diff_ms / 1000.0;
+		float fps = gears->frames / seconds;
+
+		printf("%d frames in %6.3f seconds = %6.3f FPS\n", gears->frames, seconds, fps);
+		fflush(stdout);
+
+		gears->frames = 0;
+		gears->last_fps = time;
+	}
+}
+
+static void
 frame_callback(void *data, struct wl_callback *callback, uint32_t time)
 {
 	struct gears *gears = data;
+
+	update_fps(gears, time);
 
 	gears->angle = (GLfloat) (time % 8192) * 360 / 8192.0;
 
@@ -332,18 +358,23 @@ resize_handler(struct widget *widget,
 	       int32_t width, int32_t height, void *data)
 {
 	struct gears *gears = data;
+	int32_t size, big, small;
 
 	/* Constrain child size to be square and at least 300x300 */
-	if (width > height)
-		height = width;
-	else
-		width = height;
-	if (width < 300) {
-		width = 300;
-		height = 300;
+	if (width < height) {
+		small = width;
+		big = height;
+	} else {
+		small = height;
+		big = width;
 	}
 
-	widget_set_size(gears->widget, width, height);
+	if (gears->fullscreen)
+		size = small;
+	else
+		size = big;
+
+	widget_set_size(gears->widget, size, size);
 }
 
 static void
@@ -353,11 +384,21 @@ keyboard_focus_handler(struct window *window,
 	window_schedule_redraw(window);
 }
 
+static void
+fullscreen_handler(struct window *window, void *data)
+{
+	struct gears *gears = data;
+
+	gears->fullscreen ^= 1;
+	window_set_fullscreen(window, gears->fullscreen);
+}
+
 static struct gears *
 gears_create(struct display *display)
 {
 	const int width = 450, height = 500;
 	struct gears *gears;
+	struct timeval tv;
 	int i;
 
 	gears = malloc(sizeof *gears);
@@ -397,6 +438,10 @@ gears_create(struct display *display)
 	gears->view.rotx = 20.0;
 	gears->view.roty = 30.0;
 
+	gettimeofday(&tv, NULL);
+	gears->last_fps = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+	printf("Warning: FPS count is limited by the wayland compositor or monitor refresh rate\n");
+
 	glEnable(GL_NORMALIZE);
 
 	glMatrixMode(GL_PROJECTION);
@@ -418,6 +463,7 @@ gears_create(struct display *display)
 	widget_set_motion_handler(gears->widget, motion_handler);
 	window_set_keyboard_focus_handler(gears->window,
 					  keyboard_focus_handler);
+	window_set_fullscreen_handler(gears->window, fullscreen_handler);
 
 	window_schedule_resize(gears->window, width, height);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright © 2012 Martin Minarik
+ * Copyright © 2012 Intel Corporation
  *
  * Permission to use, copy, modify, distribute, and sell this software and
  * its documentation for any purpose is hereby granted without fee, provided
@@ -20,16 +20,37 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _WESTON_LOG_H_
-#define _WESTON_LOG_H_
+#ifndef _WESTON_TEST_RUNNER_H_
+#define _WESTON_TEST_RUNNER_H_
 
-/* String literal of spaces, the same width as the timestamp. */
-#define STAMP_SPACE "               "
+#ifdef NDEBUG
+#error "Tests must not be built with NDEBUG defined, they rely on assert()."
+#endif
 
-void weston_log_file_open(const char *filename);
-void weston_log_file_close(void);
+struct weston_test {
+	const char *name;
+	void (*run)(void);
+	int must_fail;
+} __attribute__ ((aligned (16)));
 
-int weston_log(const char *fmt, ...);
-int weston_log_continue(const char *fmt, ...);
+#define TEST(name)						\
+	static void name(void);					\
+								\
+	const struct weston_test test##name			\
+		 __attribute__ ((section ("test_section"))) = {	\
+		#name, name, 0					\
+	};							\
+								\
+	static void name(void)
+
+#define FAIL_TEST(name)						\
+	static void name(void);					\
+								\
+	const struct weston_test test##name			\
+		 __attribute__ ((section ("test_section"))) = {	\
+		#name, name, 1					\
+	};							\
+								\
+	static void name(void)
 
 #endif

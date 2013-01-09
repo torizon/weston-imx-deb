@@ -11,8 +11,12 @@ xwayland = xwayland.la
 xwayland_la_LDFLAGS = -module -avoid-version
 xwayland_la_LIBADD =			\
 	$(XWAYLAND_LIBS)		\
-	$(top_builddir)/shared/libshared.la
-xwayland_la_CFLAGS = $(GCC_CFLAGS) $(COMPOSITOR_CFLAGS)
+	$(top_builddir)/shared/libshared-cairo.la
+xwayland_la_CFLAGS =				\
+	$(GCC_CFLAGS)				\
+	$(COMPOSITOR_CFLAGS)			\
+	$(PIXMAN_CFLAGS)			\
+	$(CAIRO_CFLAGS)
 xwayland_la_SOURCES =				\
 	xwayland.h				\
 	window-manager.c			\

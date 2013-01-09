@@ -44,6 +44,8 @@
 
 #include "desktop-shell-client-protocol.h"
 
+extern char **environ; /* defined by libc */
+
 struct desktop {
 	struct display *display;
 	struct desktop_shell *shell;
@@ -370,6 +372,16 @@ clock_timer_reset(struct panel_clock *clock)
 }
 
 static void
+panel_destroy_clock(struct panel_clock *clock)
+{
+	widget_destroy(clock->widget);
+
+	close(clock->clock_fd);
+
+	free(clock);
+}
+
+static void
 panel_add_clock(struct panel *panel)
 {
 	struct panel_clock *clock;
@@ -445,6 +457,39 @@ panel_configure(void *data,
 	window_schedule_resize(panel->window, width, 32);
 }
 
+static void
+panel_destroy_launcher(struct panel_launcher *launcher)
+{
+	wl_array_release(&launcher->argv);
+	wl_array_release(&launcher->envp);
+
+	free(launcher->path);
+
+	cairo_surface_destroy(launcher->icon);
+
+	widget_destroy(launcher->widget);
+	wl_list_remove(&launcher->link);
+
+	free(launcher);
+}
+
+static void
+panel_destroy(struct panel *panel)
+{
+	struct panel_launcher *tmp;
+	struct panel_launcher *launcher;
+
+	panel_destroy_clock(panel->clock);
+
+	wl_list_for_each_safe(launcher, tmp, &panel->launcher_list, link)
+		panel_destroy_launcher(launcher);
+
+	widget_destroy(panel->widget);
+	window_destroy(panel->window);
+
+	free(panel);
+}
+
 static struct panel *
 panel_create(struct display *display)
 {
@@ -470,6 +515,40 @@ panel_create(struct display *display)
 	return panel;
 }
 
+static cairo_surface_t *
+load_icon_or_fallback(const char *icon)
+{
+	cairo_surface_t *surface = cairo_image_surface_create_from_png(icon);
+	cairo_t *cr;
+
+	if (cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS)
+		return surface;
+
+	cairo_surface_destroy(surface);
+	fprintf(stderr, "ERROR loading icon from file '%s'\n", icon);
+
+	/* draw fallback icon */
+	surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+					     20, 20);
+	cr = cairo_create(surface);
+
+	cairo_set_source_rgba(cr, 0.8, 0.8, 0.8, 1);
+	cairo_paint(cr);
+
+	cairo_set_source_rgba(cr, 0, 0, 0, 1);
+	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+	cairo_rectangle(cr, 0, 0, 20, 20);
+	cairo_move_to(cr, 4, 4);
+	cairo_line_to(cr, 16, 16);
+	cairo_move_to(cr, 4, 16);
+	cairo_line_to(cr, 16, 4);
+	cairo_stroke(cr);
+
+	cairo_destroy(cr);
+
+	return surface;
+}
+
 static void
 panel_add_launcher(struct panel *panel, const char *icon, const char *path)
 {
@@ -479,14 +558,14 @@ panel_add_launcher(struct panel *panel, const char *icon, const char *path)
 
 	launcher = malloc(sizeof *launcher);
 	memset(launcher, 0, sizeof *launcher);
-	launcher->icon = cairo_image_surface_create_from_png(icon);
+	launcher->icon = load_icon_or_fallback(icon);
 	launcher->path = strdup(path);
 
 	wl_array_init(&launcher->envp);
 	wl_array_init(&launcher->argv);
-	for (i = 0; __environ[i]; i++) {
+	for (i = 0; environ[i]; i++) {
 		ps = wl_array_add(&launcher->envp, sizeof *ps);
-		*ps = __environ[i];
+		*ps = environ[i];
 	}
 	j = 0;
 
@@ -557,6 +636,8 @@ background_draw(struct widget *widget, void *data)
 	double sx, sy;
 	struct rectangle allocation;
 	int type = -1;
+	struct display *display;
+	struct wl_region *opaque;
 
 	surface = window_get_surface(background->window);
 
@@ -603,6 +684,13 @@ background_draw(struct widget *widget, void *data)
 	cairo_paint(cr);
 	cairo_destroy(cr);
 	cairo_surface_destroy(surface);
+
+	display = window_get_display(background->window);
+	opaque = wl_compositor_create_region(display_get_compositor(display));
+	wl_region_add(opaque, allocation.x, allocation.y,
+		      allocation.width, allocation.height);
+	wl_surface_set_opaque_region(window_get_wl_surface(background->window), opaque);
+	wl_region_destroy(opaque);
 }
 
 static void
@@ -804,6 +892,9 @@ desktop_shell_grab_cursor(void *data,
 	struct desktop *desktop = data;
 
 	switch (cursor) {
+	case DESKTOP_SHELL_CURSOR_NONE:
+		desktop->grab_cursor = CURSOR_BLANK;
+		break;
 	case DESKTOP_SHELL_CURSOR_BUSY:
 		desktop->grab_cursor = CURSOR_WATCH;
 		break;
@@ -846,6 +937,15 @@ static const struct desktop_shell_listener listener = {
 	desktop_shell_grab_cursor
 };
 
+static void
+background_destroy(struct background *background)
+{
+	widget_destroy(background->widget);
+	window_destroy(background->window);
+
+	free(background);
+}
+
 static struct background *
 background_create(struct desktop *desktop)
 {
@@ -873,6 +973,13 @@ grab_surface_enter_handler(struct widget *widget, struct input *input,
 }
 
 static void
+grab_surface_destroy(struct desktop *desktop)
+{
+	widget_destroy(desktop->grab_widget);
+	window_destroy(desktop->grab_window);
+}
+
+static void
 grab_surface_create(struct desktop *desktop)
 {
 	struct wl_surface *s;
@@ -894,6 +1001,27 @@ grab_surface_create(struct desktop *desktop)
 }
 
 static void
+output_destroy(struct output *output)
+{
+	background_destroy(output->background);
+	panel_destroy(output->panel);
+	wl_output_destroy(output->output);
+	wl_list_remove(&output->link);
+
+	free(output);
+}
+
+static void
+desktop_destroy_outputs(struct desktop *desktop)
+{
+	struct output *tmp;
+	struct output *output;
+
+	wl_list_for_each_safe(output, tmp, &desktop->outputs, link)
+		output_destroy(output);
+}
+
+static void
 create_output(struct desktop *desktop, uint32_t id)
 {
 	struct output *output;
@@ -902,21 +1030,21 @@ create_output(struct desktop *desktop, uint32_t id)
 	if (!output)
 		return;
 
-	output->output = wl_display_bind(display_get_display(desktop->display),
-					 id, &wl_output_interface);
+	output->output =
+		display_bind(desktop->display, id, &wl_output_interface, 1);
 
 	wl_list_insert(&desktop->outputs, &output->link);
 }
 
 static void
-global_handler(struct wl_display *display, uint32_t id,
+global_handler(struct display *display, uint32_t id,
 	       const char *interface, uint32_t version, void *data)
 {
 	struct desktop *desktop = data;
 
 	if (!strcmp(interface, "desktop_shell")) {
-		desktop->shell =
-			wl_display_bind(display, id, &desktop_shell_interface);
+		desktop->shell = display_bind(desktop->display,
+					      id, &desktop_shell_interface, 1);
 		desktop_shell_add_listener(desktop->shell, &listener, desktop);
 	} else if (!strcmp(interface, "wl_output")) {
 		create_output(desktop, id);
@@ -973,8 +1101,7 @@ int main(int argc, char *argv[])
 	}
 
 	display_set_user_data(desktop.display, &desktop);
-	wl_display_add_global_listener(display_get_display(desktop.display),
-				       global_handler, &desktop);
+	display_set_global_handler(desktop.display, global_handler);
 
 	wl_list_for_each(output, &desktop.outputs, link) {
 		struct wl_surface *surface;
@@ -1003,6 +1130,14 @@ int main(int argc, char *argv[])
 	signal(SIGCHLD, sigchild_handler);
 
 	display_run(desktop.display);
+
+	/* Cleanup */
+	grab_surface_destroy(&desktop);
+	desktop_destroy_outputs(&desktop);
+	if (desktop.unlock_dialog)
+		unlock_dialog_destroy(desktop.unlock_dialog);
+	desktop_shell_destroy(desktop.shell);
+	display_destroy(desktop.display);
 
 	return 0;
 }

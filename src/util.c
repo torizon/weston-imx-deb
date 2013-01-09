@@ -46,6 +46,17 @@ weston_spring_update(struct weston_spring *spring, uint32_t msec)
 {
 	double force, v, current, step;
 
+	/* Limit the number of executions of the loop below by ensuring that
+	 * the timestamp for last update of the spring is no more than 1s ago.
+	 * This handles the case where time moves backwards or forwards in
+	 * large jumps.
+	 */
+	if (msec - spring->timestamp > 1000) {
+		weston_log("unexpectedly large timestamp jump (from %u to %u)\n",
+			   spring->timestamp, msec);
+		spring->timestamp = msec - 1000;
+	}
+
 	step = 0.01;
 	while (4 < msec - spring->timestamp) {
 		current = spring->current;
@@ -93,7 +104,7 @@ struct weston_surface_animation {
 	struct weston_spring spring;
 	struct weston_transform transform;
 	struct wl_listener listener;
-	GLfloat start, stop;
+	float start, stop;
 	weston_surface_animation_frame_func_t frame;
 	weston_surface_animation_done_func_t done;
 	void *data;
@@ -148,7 +159,7 @@ weston_surface_animation_frame(struct weston_animation *base,
 
 static struct weston_surface_animation *
 weston_surface_animation_run(struct weston_surface *surface,
-			     GLfloat start, GLfloat stop,
+			     float start, float stop,
 			     weston_surface_animation_frame_func_t frame,
 			     weston_surface_animation_done_func_t done,
 			     void *data)
@@ -188,7 +199,7 @@ static void
 zoom_frame(struct weston_surface_animation *animation)
 {
 	struct weston_surface *es = animation->surface;
-	GLfloat scale;
+	float scale;
 
 	scale = animation->start +
 		(animation->stop - animation->start) *
@@ -208,7 +219,7 @@ zoom_frame(struct weston_surface_animation *animation)
 }
 
 WL_EXPORT struct weston_surface_animation *
-weston_zoom_run(struct weston_surface *surface, GLfloat start, GLfloat stop,
+weston_zoom_run(struct weston_surface *surface, float start, float stop,
 		weston_surface_animation_done_func_t done, void *data)
 {
 	return weston_surface_animation_run(surface, start, stop,
@@ -237,7 +248,7 @@ weston_fade_run(struct weston_surface *surface,
 static void
 slide_frame(struct weston_surface_animation *animation)
 {
-	GLfloat scale;
+	float scale;
 
 	scale = animation->start +
 		(animation->stop - animation->start) *
@@ -247,13 +258,16 @@ slide_frame(struct weston_surface_animation *animation)
 }
 
 WL_EXPORT struct weston_surface_animation *
-weston_slide_run(struct weston_surface *surface, GLfloat start, GLfloat stop,
+weston_slide_run(struct weston_surface *surface, float start, float stop,
 		weston_surface_animation_done_func_t done, void *data)
 {
 	struct weston_surface_animation *animation;
 
 	animation = weston_surface_animation_run(surface, start, stop,
 						 slide_frame, done, data);
+	if (!animation)
+		return NULL;
+
 	animation->spring.friction = 900;
 	animation->spring.k = 300;
 

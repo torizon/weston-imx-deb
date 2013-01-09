@@ -37,7 +37,7 @@ struct smoke {
 	struct window *window;
 	struct widget *widget;
 	int width, height;
-	int offset, current;
+	int current;
 	uint32_t time;
 	struct { float *d, *u, *v; } b[2];
 };
@@ -223,6 +223,7 @@ redraw_handler(struct widget *widget, void *data)
 
 	callback = wl_surface_frame(window_get_wl_surface(smoke->window));
 	wl_callback_add_listener(callback, &listener, smoke);
+	wl_surface_commit(window_get_wl_surface(smoke->window));
 }
 
 static int
@@ -294,7 +295,6 @@ int main(int argc, char *argv[])
 	window_set_buffer_type(smoke.window, WINDOW_BUFFER_TYPE_SHM);
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	srandom(ts.tv_nsec);
-	smoke.offset = random();
 
 	smoke.current = 0;
 	size = smoke.height * smoke.width;

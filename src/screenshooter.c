@@ -101,6 +101,7 @@ screenshooter_frame_notify(struct wl_listener *listener, void *data)
 	int32_t stride;
 	uint8_t *pixels, *d, *s;
 
+	output->disable_planes--;
 	wl_list_remove(&listener->link);
 	stride = l->buffer->width * 4;
 	pixels = malloc(stride * l->buffer->height);
@@ -165,6 +166,7 @@ screenshooter_shoot(struct wl_client *client,
 
 	l->listener.notify = screenshooter_frame_notify;
 	wl_signal_add(&output->frame_signal, &l->listener);
+	output->disable_planes++;
 	weston_output_schedule_repaint(output);
 }
 
@@ -212,6 +214,7 @@ screenshooter_binding(struct wl_seat *seat, uint32_t time, uint32_t key,
 }
 
 struct weston_recorder {
+	struct weston_output *output;
 	uint32_t *frame, *rect;
 	uint32_t total;
 	int fd;
@@ -251,6 +254,55 @@ component_delta(uint32_t next, uint32_t prev)
 }
 
 static void
+transform_rect(struct weston_output *output, pixman_box32_t *r)
+{
+	pixman_box32_t s = *r;
+
+	switch(output->transform) {
+	case WL_OUTPUT_TRANSFORM_FLIPPED:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+		s.x1 = output->width - r->x2;
+		s.x2 = output->width - r->x1;
+		break;
+	default:
+		break;
+	}
+
+        switch(output->transform) {
+        case WL_OUTPUT_TRANSFORM_NORMAL:
+        case WL_OUTPUT_TRANSFORM_FLIPPED:
+		r->x1 = s.x1;
+		r->x2 = s.x2;
+                break;
+        case WL_OUTPUT_TRANSFORM_90:
+        case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+		r->x1 = output->current->width - s.y2;
+		r->y1 = s.x1;
+		r->x2 = output->current->width - s.y1;
+		r->y2 = s.x2;
+                break;
+        case WL_OUTPUT_TRANSFORM_180:
+        case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+		r->x1 = output->current->width - s.x2;
+		r->y1 = output->current->height - s.y2;
+		r->x2 = output->current->width - s.x1;
+		r->y2 = output->current->height - s.y1;
+                break;
+        case WL_OUTPUT_TRANSFORM_270:
+        case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+		r->x1 = s.y1; 
+		r->y1 = output->current->height - s.x2;
+		r->x2 = s.y2; 
+		r->y2 = output->current->height - s.x1;
+                break;
+        default:
+                break;
+        }
+}
+
+static void
 weston_recorder_frame_notify(struct wl_listener *listener, void *data)
 {
 	struct weston_recorder *recorder =
@@ -258,7 +310,7 @@ weston_recorder_frame_notify(struct wl_listener *listener, void *data)
 	struct weston_output *output = data;
 	uint32_t msecs = output->frame_time;
 	pixman_box32_t *r;
-	pixman_region32_t damage;
+	pixman_region32_t damage, *previous_damage;
 	int i, j, k, n, width, height, run, stride;
 	uint32_t delta, prev, *d, *s, *p, next;
 	struct {
@@ -267,13 +319,25 @@ weston_recorder_frame_notify(struct wl_listener *listener, void *data)
 	} header;
 	struct iovec v[2];
 
+	/* When recording, this will be exactly the region that was repainted
+	 * in this frame. Since overlays are disabled, the whole primary plane
+	 * damage is rendered. For the first frame, the whole output will be
+	 * damaged and that damage will be added to both buffers causing the
+	 * non-current buffer damage to be while output. Rendering will clear
+	 * all the damage in the current buffer so in the next frame (when
+	 * that is non-current) the only damage left will be the one added
+	 * from the primary plane. */
+	previous_damage = &output->buffer_damage[output->current_buffer ^ 1];
+
 	pixman_region32_init(&damage);
-	pixman_region32_intersect(&damage, &output->region,
-				  &output->previous_damage);
+	pixman_region32_intersect(&damage, &output->region, previous_damage);
 
 	r = pixman_region32_rectangles(&damage, &n);
 	if (n == 0)
 		return;
+
+	for (i = 0; i < n; i++)
+		transform_rect(output, &r[i]);
 
 	header.msecs = msecs;
 	header.nrects = n;
@@ -346,10 +410,8 @@ weston_recorder_create(struct weston_output *output, const char *filename)
 	recorder->rect = malloc(size);
 	recorder->total = 0;
 	recorder->count = 0;
+	recorder->output = output;
 	memset(recorder->frame, 0, size);
-
-	recorder->fd = open(filename,
-			    O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
 
 	header.magic = WCAP_HEADER_MAGIC;
 
@@ -362,12 +424,21 @@ weston_recorder_create(struct weston_output *output, const char *filename)
 		break;
 	}
 
+	recorder->fd = open(filename,
+			    O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+
+	if (recorder->fd < 0) {
+		weston_log("problem opening output file %s: %m\n", filename);
+		return;
+	}
+
 	header.width = output->current->width;
 	header.height = output->current->height;
 	recorder->total += write(recorder->fd, &header, sizeof header);
 
 	recorder->frame_listener.notify = weston_recorder_frame_notify;
 	wl_signal_add(&output->frame_signal, &recorder->frame_listener);
+	output->disable_planes++;
 	weston_output_damage(output);
 }
 
@@ -378,6 +449,7 @@ weston_recorder_destroy(struct weston_recorder *recorder)
 	close(recorder->fd);
 	free(recorder->frame);
 	free(recorder->rect);
+	recorder->output->disable_planes--;
 	free(recorder);
 }
 

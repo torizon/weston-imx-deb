@@ -29,13 +29,14 @@
 #include <unistd.h>
 #include <sys/mman.h>
 
-#include <GLES2/gl2.h>
 #include <wayland-client.h>
-#include <wayland-egl.h>
 #include "../shared/os-compatibility.h"
+
+#define ARRAY_LENGTH(a) (sizeof (a) / sizeof (a)[0])
 
 struct touch {
 	struct wl_display *display;
+	struct wl_registry *registry;
 	struct wl_compositor *compositor;
 	struct wl_shell *shell;
 	struct wl_shm *shm;
@@ -47,7 +48,6 @@ struct touch {
 	struct wl_shell_surface *shell_surface;
 	struct wl_buffer *buffer;
 	int has_argb;
-	uint32_t mask;
 	int width, height;
 	void *data;
 };
@@ -109,6 +109,8 @@ touch_paint(struct touch *touch, int32_t x, int32_t y, int32_t id)
 		0xffffff00,
 		0xff0000ff,
 		0xffff00ff,
+		0xff00ff00,
+		0xff00ffff,
 	};
 
 	if (id < (int32_t) ARRAY_LENGTH(colors))
@@ -116,20 +118,34 @@ touch_paint(struct touch *touch, int32_t x, int32_t y, int32_t id)
 	else
 		c = 0xffffffff;
 
-	if (x < 1 || touch->width - 1 < x ||
-	    y < 1 || touch->height - 1 < y)
+	if (x < 2 || x >= touch->width - 2 ||
+	    y < 2 || y >= touch->height - 2)
 		return;
 
-	p = (uint32_t *) touch->data + (x - 1) + (y -1 ) * touch->width;
+	p = (uint32_t *) touch->data + (x - 2) + (y - 2) * touch->width;
+	p[2] = c;
+	p += touch->width;
 	p[1] = c;
+	p[2] = c;
+	p[3] = c;
 	p += touch->width;
 	p[0] = c;
 	p[1] = c;
 	p[2] = c;
+	p[3] = c;
+	p[4] = c;
 	p += touch->width;
 	p[1] = c;
+	p[2] = c;
+	p[3] = c;
+	p += touch->width;
+	p[2] = c;
 
-	wl_surface_damage(touch->surface, 0, 0, touch->width, touch->height);
+	wl_surface_damage(touch->surface, x - 2, y - 2, 5, 5);
+	/* todo: We could queue up more damage before committing, if there
+	 * are more input events to handle.
+	 */
+	wl_surface_commit(touch->surface);
 }
 
 static void
@@ -200,35 +216,57 @@ static const struct wl_seat_listener seat_listener = {
 };
 
 static void
-handle_global(struct wl_display *display, uint32_t id,
-	      const char *interface, uint32_t version, void *data)
+handle_ping(void *data, struct wl_shell_surface *shell_surface,
+	    uint32_t serial)
+{
+	wl_shell_surface_pong(shell_surface, serial);
+}
+
+static void
+handle_configure(void *data, struct wl_shell_surface *shell_surface,
+		 uint32_t edges, int32_t width, int32_t height)
+{
+}
+
+static void
+handle_popup_done(void *data, struct wl_shell_surface *shell_surface)
+{
+}
+
+static const struct wl_shell_surface_listener shell_surface_listener = {
+	handle_ping,
+	handle_configure,
+	handle_popup_done
+};
+
+static void
+handle_global(void *data, struct wl_registry *registry,
+	      uint32_t name, const char *interface, uint32_t version)
 {
 	struct touch *touch = data;
 
 	if (strcmp(interface, "wl_compositor") == 0) {
 		touch->compositor =
-			wl_display_bind(display, id, &wl_compositor_interface);
+			wl_registry_bind(registry, name,
+					 &wl_compositor_interface, 1);
 	} else if (strcmp(interface, "wl_shell") == 0) {
 		touch->shell =
-			wl_display_bind(display, id, &wl_shell_interface);
+			wl_registry_bind(registry, name,
+					 &wl_shell_interface, 1);
 	} else if (strcmp(interface, "wl_shm") == 0) {
-		touch->shm = wl_display_bind(display, id, &wl_shm_interface);
+		touch->shm = wl_registry_bind(registry, name,
+					      &wl_shm_interface, 1);
 		wl_shm_add_listener(touch->shm, &shm_listenter, touch);
 	} else if (strcmp(interface, "wl_seat") == 0) {
-		touch->seat = wl_display_bind(display, id, &wl_seat_interface);
+		touch->seat = wl_registry_bind(registry, name,
+					       &wl_seat_interface, 1);
 		wl_seat_add_listener(touch->seat, &seat_listener, touch);
 	}
 }
 
-static int
-event_mask_update(uint32_t mask, void *data)
-{
-	struct touch *touch = data;
-
-	touch->mask = mask;
-
-	return 0;
-}
+static const struct wl_registry_listener registry_listener = {
+	handle_global
+};
 
 static struct touch *
 touch_create(int width, int height)
@@ -240,8 +278,9 @@ touch_create(int width, int height)
 	assert(touch->display);
 
 	touch->has_argb = 0;
-	wl_display_add_global_listener(touch->display, handle_global, touch);
-	wl_display_iterate(touch->display, WL_DISPLAY_READABLE);
+	touch->registry = wl_display_get_registry(touch->display);
+	wl_registry_add_listener(touch->registry, &registry_listener, touch);
+	wl_display_dispatch(touch->display);
 	wl_display_roundtrip(touch->display);
 
 	if (!touch->has_argb) {
@@ -249,7 +288,7 @@ touch_create(int width, int height)
 		exit(1);
 	}
 
-	wl_display_get_fd(touch->display, event_mask_update, touch);
+	wl_display_get_fd(touch->display);
 	
 	touch->width = width;
 	touch->height = height;
@@ -258,12 +297,19 @@ touch_create(int width, int height)
 							  touch->surface);
 	create_shm_buffer(touch);
 
-	wl_shell_surface_set_toplevel(touch->shell_surface);
+	if (touch->shell_surface) {
+		wl_shell_surface_add_listener(touch->shell_surface,
+					      &shell_surface_listener, touch);
+		wl_shell_surface_set_toplevel(touch->shell_surface);
+	}
+
 	wl_surface_set_user_data(touch->surface, touch);
+	wl_shell_surface_set_title(touch->shell_surface, "simple-touch");
 
 	memset(touch->data, 64, width * height * 4);
 	wl_surface_attach(touch->surface, touch->buffer, 0, 0);
 	wl_surface_damage(touch->surface, 0, 0, width, height);
+	wl_surface_commit(touch->surface);
 
 	return touch;
 }
@@ -272,11 +318,12 @@ int
 main(int argc, char **argv)
 {
 	struct touch *touch;
+	int ret = 0;
 
 	touch = touch_create(600, 500);
 
-	while (true)
-		wl_display_iterate(touch->display, touch->mask);
+	while (ret != -1)
+		ret = wl_display_dispatch(touch->display);
 
 	return 0;
 }

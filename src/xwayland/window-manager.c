@@ -37,7 +37,6 @@
 
 #include "../../shared/cairo-util.h"
 #include "../compositor.h"
-#include "../log.h"
 #include "xserver-server-protocol.h"
 #include "hash.h"
 
@@ -103,6 +102,8 @@ struct weston_wm_window {
 	struct wl_event_source *repaint_source;
 	struct wl_event_source *configure_source;
 	int properties_dirty;
+	int pid;
+	char *machine;
 	char *class;
 	char *name;
 	struct weston_wm_window *transient_for;
@@ -205,6 +206,9 @@ xcb_cursor_library_load_cursor(struct weston_wm *wm, const char *file)
 		size = 32;
 
 	images = XcursorLibraryLoadImages (file, NULL, size);
+	if (!images)
+		return -1;
+
 	cursor = xcb_cursor_images_load_cursor (wm, images);
 	XcursorImagesDestroy (images);
 
@@ -301,7 +305,9 @@ weston_wm_window_read_properties(struct weston_wm_window *window)
 		{ wm->atom.wm_protocols, TYPE_WM_PROTOCOLS, F(protocols) },
 		{ wm->atom.net_wm_window_type, XCB_ATOM_ATOM, F(type) },
 		{ wm->atom.net_wm_name, XCB_ATOM_STRING, F(name) },
+		{ wm->atom.net_wm_pid, XCB_ATOM_CARDINAL, F(pid) },
 		{ wm->atom.motif_wm_hints, TYPE_MOTIF_WM_HINTS, 0 },
+		{ wm->atom.wm_client_machine, XCB_ATOM_WM_CLIENT_MACHINE, F(machine) },
 	};
 #undef F
 
@@ -339,6 +345,7 @@ weston_wm_window_read_properties(struct weston_wm_window *window)
 		p = ((char *) window + props[i].offset);
 
 		switch (props[i].type) {
+		case XCB_ATOM_WM_CLIENT_MACHINE:
 		case XCB_ATOM_STRING:
 			/* FIXME: We're using this for both string and
 			   utf8_string */
@@ -354,6 +361,7 @@ weston_wm_window_read_properties(struct weston_wm_window *window)
 			*(struct weston_wm_window **) p =
 				hash_table_lookup(wm->window_hash, *xid);
 			break;
+		case XCB_ATOM_CARDINAL:
 		case XCB_ATOM_ATOM:
 			atom = xcb_get_property_value(reply);
 			*(xcb_atom_t *) p = *atom;
@@ -476,6 +484,25 @@ weston_wm_handle_configure_notify(struct weston_wm *wm, xcb_generic_event_t *eve
 	weston_wm_window_get_child_position(window, &x, &y);
 	window->x = configure_notify->x - x;
 	window->y = configure_notify->y - y;
+}
+
+static void
+weston_wm_kill_client(struct wl_listener *listener, void *data)
+{
+	struct weston_surface *surface = data;
+	struct weston_wm_window *window = get_wm_window(surface);
+	char name[1024];
+
+	if (!window)
+		return;
+
+	gethostname(name, 1024);
+
+	/* this is only one heuristic to guess the PID of a client is valid,
+	 * assuming it's compliant with icccm and ewmh. Non-compliants and
+	 * remote applications of course fail. */
+	if (!strcmp(window->machine, name) && window->pid != 0)
+		kill(window->pid, SIGKILL);
 }
 
 static void
@@ -718,17 +745,19 @@ weston_wm_window_draw_decoration(void *data)
 	cairo_destroy(cr);
 
 	if (window->surface) {
+		pixman_region32_fini(&window->surface->pending.opaque);
+		pixman_region32_init_rect(&window->surface->pending.opaque, 0, 0,
+					  width, height);
+
 		/* We leave an extra pixel around the X window area to
 		 * make sure we don't sample from the undefined alpha
 		 * channel when filtering. */
-		window->surface->opaque_rect[0] =
-			(double) (x - 1) / width;
-		window->surface->opaque_rect[1] =
-			(double) (x + window->width + 1) / width;
-		window->surface->opaque_rect[2] =
-			(double) (y - 1) / height;
-		window->surface->opaque_rect[3] =
-			(double) (y + window->height + 1) / height;
+		pixman_region32_intersect_rect(&window->surface->pending.opaque,
+					       &window->surface->pending.opaque,
+					       x - 1, y - 1,
+					       window->width + 2,
+					       window->height + 2);
+		window->surface->geometry.dirty = 1;
 
 		pixman_region32_init_rect(&window->surface->input,
 					  t->margin, t->margin,
@@ -741,13 +770,15 @@ static void
 weston_wm_window_schedule_repaint(struct weston_wm_window *window)
 {
 	struct weston_wm *wm = window->wm;
+	int width, height;
 
 	if (window->frame_id == XCB_WINDOW_NONE) {
 		if (window->surface != NULL) {
-			window->surface->opaque_rect[0] = 0.0;
-			window->surface->opaque_rect[1] = 1.0;
-			window->surface->opaque_rect[2] = 0.0;
-			window->surface->opaque_rect[3] = 1.0;
+			weston_wm_window_get_frame_size(window, &width, &height);
+			pixman_region32_fini(&window->surface->pending.opaque);
+			pixman_region32_init_rect(&window->surface->pending.opaque, 0, 0,
+						  width, height);
+			window->surface->geometry.dirty = 1;
 		}
 		return;
 	}
@@ -880,6 +911,13 @@ weston_wm_handle_reparent_notify(struct weston_wm *wm, xcb_generic_event_t *even
 	}
 }
 
+struct weston_seat *
+weston_wm_pick_seat(struct weston_wm *wm)
+{
+	return container_of(wm->server->compositor->seat_list.next,
+			    struct weston_seat, link);
+}
+
 static void
 weston_wm_window_handle_moveresize(struct weston_wm_window *window,
 				   xcb_client_message_event_t *client_message)
@@ -896,7 +934,7 @@ weston_wm_window_handle_moveresize(struct weston_wm_window *window,
 	};
 
 	struct weston_wm *wm = window->wm;
-	struct weston_seat *seat = wm->server->compositor->seat;
+	struct weston_seat *seat = weston_wm_pick_seat(wm);
 	int detail;
 	struct weston_shell_interface *shell_interface =
 		&wm->server->compositor->shell_interface;
@@ -999,7 +1037,7 @@ weston_wm_destroy_cursors(struct weston_wm *wm)
 static int
 get_cursor_for_location(struct theme *t, int width, int height, int x, int y)
 {
-	int location = theme_get_location(t, x, y, width, height);
+	int location = theme_get_location(t, x, y, width, height, 0);
 
 	switch (location) {
 		case THEME_LOCATION_RESIZING_TOP:
@@ -1048,6 +1086,7 @@ weston_wm_handle_button(struct weston_wm *wm, xcb_generic_event_t *event)
 	xcb_button_press_event_t *button = (xcb_button_press_event_t *) event;
 	struct weston_shell_interface *shell_interface =
 		&wm->server->compositor->shell_interface;
+	struct weston_seat *seat = weston_wm_pick_seat(wm);
 	struct weston_wm_window *window;
 	enum theme_location location;
 	struct theme *t = wm->theme;
@@ -1065,12 +1104,11 @@ weston_wm_handle_button(struct weston_wm *wm, xcb_generic_event_t *event)
 		location = theme_get_location(t,
 					      button->event_x,
 					      button->event_y,
-					      width, height);
+					      width, height, 0);
 
 		switch (location) {
 		case THEME_LOCATION_TITLEBAR:
-			shell_interface->move(window->shsurf,
-					      wm->server->compositor->seat);
+			shell_interface->move(window->shsurf, seat);
 			break;
 		case THEME_LOCATION_RESIZING_TOP:
 		case THEME_LOCATION_RESIZING_BOTTOM:
@@ -1081,8 +1119,7 @@ weston_wm_handle_button(struct weston_wm *wm, xcb_generic_event_t *event)
 		case THEME_LOCATION_RESIZING_BOTTOM_LEFT:
 		case THEME_LOCATION_RESIZING_BOTTOM_RIGHT:
 			shell_interface->resize(window->shsurf,
-						wm->server->compositor->seat,
-						location);
+						seat, location);
 			break;
 		default:
 			break;
@@ -1223,7 +1260,9 @@ wxs_wm_get_resources(struct weston_wm *wm)
 		{ "WM_DELETE_WINDOW",	F(atom.wm_delete_window) },
 		{ "WM_STATE",		F(atom.wm_state) },
 		{ "WM_S0",		F(atom.wm_s0) },
+		{ "WM_CLIENT_MACHINE",	F(atom.wm_client_machine) },
 		{ "_NET_WM_NAME",	F(atom.net_wm_name) },
+		{ "_NET_WM_PID",	F(atom.net_wm_pid) },
 		{ "_NET_WM_ICON",	F(atom.net_wm_icon) },
 		{ "_NET_WM_STATE",	F(atom.net_wm_state) },
 		{ "_NET_WM_STATE_FULLSCREEN", F(atom.net_wm_state_fullscreen) },
@@ -1460,6 +1499,9 @@ weston_wm_create(struct weston_xserver *wxs)
 	wm->activate_listener.notify = weston_wm_window_activate;
 	wl_signal_add(&wxs->compositor->activate_signal,
 		      &wm->activate_listener);
+	wm->kill_listener.notify = weston_wm_kill_client;
+	wl_signal_add(&wxs->compositor->kill_signal,
+		      &wm->kill_listener);
 
 	weston_wm_create_cursors(wm);
 	weston_wm_window_set_cursor(wm, wm->screen->root, XWM_CURSOR_LEFT_PTR);
@@ -1479,6 +1521,7 @@ weston_wm_destroy(struct weston_wm *wm)
 	wl_event_source_remove(wm->source);
 	wl_list_remove(&wm->selection_listener.link);
 	wl_list_remove(&wm->activate_listener.link);
+	wl_list_remove(&wm->kill_listener.link);
 
 	free(wm);
 }

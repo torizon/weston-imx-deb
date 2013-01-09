@@ -1,28 +1,78 @@
-TESTS = surface-test.la client-test.la event-test.la
+TESTS = $(module_tests) $(weston_tests)
 
-TESTS_ENVIRONMENT = $(SHELL) $(top_srcdir)/tests/weston-test
+module_tests =				\
+	surface-test.la			\
+	surface-global-test.la
+
+weston_tests =				\
+	keyboard-test			\
+	event-test			\
+	button-test			\
+	text-test
+
+TESTS_ENVIRONMENT = $(SHELL) $(top_srcdir)/tests/weston-tests-env
+
+clean-local:
+	-rm -rf logs
 
 export abs_builddir
 
+noinst_LTLIBRARIES =			\
+	$(weston_test)
+
+noinst_PROGRAMS =			\
+	$(setbacklight)			\
+	matrix-test
+
+check_LTLIBRARIES =			\
+	$(module_tests)
+
+check_PROGRAMS =			\
+	$(weston_tests)
+
 AM_CFLAGS = $(GCC_CFLAGS)
 AM_CPPFLAGS = -I$(top_srcdir)/src -DUNIT_TEST $(COMPOSITOR_CFLAGS)
-
-
-check_LTLIBRARIES = $(TESTS)
-check_PROGRAMS = test-client
-
 AM_LDFLAGS = -module -avoid-version -rpath $(libdir)
 
-test_runner_src = test-runner.c test-runner.h
+surface_global_test_la_SOURCES = surface-global-test.c
+surface_test_la_SOURCES = surface-test.c
 
-surface_test_la_SOURCES = surface-test.c $(test_runner_src)
-client_test_la_SOURCES = client-test.c $(test_runner_src)
-event_test_la_SOURCES = event-test.c $(test_runner_src)
+weston_test = weston-test.la
+weston_test_la_LIBADD = $(COMPOSITOR_LIBS)	\
+	../shared/libshared.la
+weston_test_la_CFLAGS = $(GCC_CFLAGS) $(COMPOSITOR_CFLAGS)
+weston_test_la_SOURCES =		\
+	weston-test.c			\
+	wayland-test-protocol.c		\
+	wayland-test-server-protocol.h
 
-test_client_SOURCES = test-client.c
-test_client_LDADD = $(SIMPLE_CLIENT_LIBS)
+weston_test_runner_src =		\
+	weston-test-runner.c		\
+	weston-test-runner.h
+weston_test_client_src =		\
+	weston-test-client-helper.c	\
+	weston-test-client-helper.h	\
+	wayland-test-protocol.c		\
+	wayland-test-client-protocol.h	\
+	$(weston_test_runner_src)
+weston_test_client_libs =		\
+	$(SIMPLE_CLIENT_LIBS)		\
+	../shared/libshared.la
 
-noinst_PROGRAMS = setbacklight matrix-test
+keyboard_test_SOURCES = keyboard-test.c $(weston_test_client_src)
+keyboard_test_LDADD = $(weston_test_client_libs)
+
+event_test_SOURCES = event-test.c $(weston_test_client_src)
+event_test_LDADD = $(weston_test_client_libs)
+
+button_test_SOURCES = button-test.c $(weston_test_client_src)
+button_test_LDADD = $(weston_test_client_libs)
+
+text_test_SOURCES =				\
+	text-test.c				\
+	../clients/text-protocol.c		\
+	$(weston_test_client_src)
+text_test_LDADD = $(weston_test_client_libs)
 
 matrix_test_SOURCES =				\
 	matrix-test.c				\
@@ -35,6 +85,20 @@ setbacklight_SOURCES =				\
 	$(top_srcdir)/src/libbacklight.c	\
 	$(top_srcdir)/src/libbacklight.h
 
-setbacklight_LDADD = -ludev -ldrm
+setbacklight_CFLAGS = $(AM_CFLAGS) $(SETBACKLIGHT_CFLAGS)
+setbacklight_LDADD = $(SETBACKLIGHT_LIBS)
 
-EXTRA_DIST = weston-test
+if BUILD_SETBACKLIGHT
+setbacklight = setbacklight
+endif
+
+EXTRA_DIST = weston-tests-env
+
+BUILT_SOURCES =					\
+	wayland-test-protocol.c			\
+	wayland-test-server-protocol.h		\
+	wayland-test-client-protocol.h
+
+CLEANFILES = $(BUILT_SOURCES)
+
+@wayland_scanner_rules@

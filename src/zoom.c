@@ -123,8 +123,10 @@ weston_zoom_frame_z(struct weston_animation *animation,
 		output->zoom.spring_z.current = 0.0;
 
 	if (weston_spring_done(&output->zoom.spring_z)) {
-		if (output->zoom.level <= 0.0)
+		if (output->zoom.active && output->zoom.level <= 0.0) {
 			output->zoom.active = 0;
+			output->disable_planes--;
+		}
 		output->zoom.spring_z.current = output->zoom.level;
 		wl_list_remove(&animation->link);
 		wl_list_init(&animation->link);
@@ -134,11 +136,21 @@ weston_zoom_frame_z(struct weston_animation *animation,
 	weston_output_damage(output);
 }
 
+static struct weston_seat *
+weston_zoom_pick_seat(struct weston_compositor *compositor)
+{
+	return container_of(compositor->seat_list.next,
+			    struct weston_seat, link);
+}
+
+
 static void
 weston_zoom_frame_xy(struct weston_animation *animation,
 		struct weston_output *output, uint32_t msecs)
 {
+	struct weston_seat *seat = weston_zoom_pick_seat(output->compositor);
 	wl_fixed_t x, y;
+
 	if (animation->frame_counter <= 1)
 		output->zoom.spring_xy.timestamp = msecs;
 
@@ -155,13 +167,11 @@ weston_zoom_frame_xy(struct weston_animation *animation,
 	if (weston_spring_done(&output->zoom.spring_xy)) {
 		output->zoom.spring_xy.current = output->zoom.spring_xy.target;
 		output->zoom.current.x =
-				(output->zoom.type == ZOOM_FOCUS_POINTER) ?
-					output->compositor->seat->pointer.x :
-					output->zoom.text_cursor.x;
+			output->zoom.type == ZOOM_FOCUS_POINTER ?
+				seat->pointer.x : output->zoom.text_cursor.x;
 		output->zoom.current.y =
-				(output->zoom.type == ZOOM_FOCUS_POINTER) ?
-					output->compositor->seat->pointer.y :
-					output->zoom.text_cursor.y;
+			output->zoom.type == ZOOM_FOCUS_POINTER ?
+				seat->pointer.y : output->zoom.text_cursor.y;
 		wl_list_remove(&animation->link);
 		wl_list_init(&animation->link);
 	}
@@ -177,11 +187,55 @@ zoom_area_center_from_pointer(struct weston_output *output,
 	float level = output->zoom.spring_z.current;
 	wl_fixed_t offset_x = wl_fixed_from_int(output->x);
 	wl_fixed_t offset_y = wl_fixed_from_int(output->y);
-	wl_fixed_t w = wl_fixed_from_int(output->current->width);
-	wl_fixed_t h = wl_fixed_from_int(output->current->height);
+	wl_fixed_t w = wl_fixed_from_int(output->width);
+	wl_fixed_t h = wl_fixed_from_int(output->height);
 
 	*x -= ((((*x - offset_x) / (float) w) - 0.5) * (w * (1.0 - level)));
 	*y -= ((((*y - offset_y) / (float) h) - 0.5) * (h * (1.0 - level)));
+}
+
+static void
+weston_zoom_apply_output_transform(struct weston_output *output,
+						float *x, float *y)
+{
+	float tx, ty;
+
+	switch(output->transform) {
+	case WL_OUTPUT_TRANSFORM_NORMAL:
+	default:
+		return;
+	case WL_OUTPUT_TRANSFORM_90:
+		tx = -*y;
+		ty = *x;
+		break;
+	case WL_OUTPUT_TRANSFORM_180:
+		tx = -*x;
+		ty = -*y;
+		break;
+	case WL_OUTPUT_TRANSFORM_270:
+		tx = *y;
+		ty = -*x;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED:
+		tx = -*x;
+		ty = *y;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+		tx = -*y;
+		ty = -*x;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+		tx = *x;
+		ty = -*y;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+		tx = *y;
+		ty = *x;
+		break;
+	}
+
+	*x = tx;
+	*y = ty;
 }
 
 static void
@@ -208,11 +262,14 @@ weston_output_update_zoom_transform(struct weston_output *output)
 	global_y = wl_fixed_to_double(y);
 
 	output->zoom.trans_x =
-		((((global_x - output->x) / output->current->width) *
+		((((global_x - output->x) / output->width) *
 		(level * 2)) - level) * ratio;
 	output->zoom.trans_y =
-		((((global_y - output->y) / output->current->height) *
+		((((global_y - output->y) / output->height) *
 		(level * 2)) - level) * ratio;
+
+	weston_zoom_apply_output_transform(output, &output->zoom.trans_x,
+						   &output->zoom.trans_y);
 
 	trans_max = level * 2 - level;
 	trans_min = -trans_max;
@@ -278,17 +335,16 @@ weston_zoom_transition(struct weston_output *output, uint32_t type,
 WL_EXPORT void
 weston_output_update_zoom(struct weston_output *output, uint32_t type)
 {
-	wl_fixed_t x = output->compositor->seat->pointer.x;
-	wl_fixed_t y = output->compositor->seat->pointer.y;
+	struct weston_seat *seat = weston_zoom_pick_seat(output->compositor);
+	wl_fixed_t x = seat->pointer.x;
+	wl_fixed_t y = seat->pointer.y;
 
 	zoom_area_center_from_pointer(output, &x, &y);
 
 	if (type == ZOOM_FOCUS_POINTER) {
 		if (wl_list_empty(&output->zoom.animation_xy.link)) {
-			output->zoom.current.x =
-					output->compositor->seat->pointer.x;
-			output->zoom.current.y =
-					output->compositor->seat->pointer.y;
+			output->zoom.current.x = seat->pointer.x;
+			output->zoom.current.y = seat->pointer.y;
 		} else {
 			output->zoom.to.x = x;
 			output->zoom.to.y = y;

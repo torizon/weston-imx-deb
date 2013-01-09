@@ -42,16 +42,14 @@
 #include <EGL/eglext.h>
 
 #include "compositor.h"
-#include "log.h"
+#include "../shared/cairo-util.h"
 
 struct wayland_compositor {
 	struct weston_compositor	 base;
 
-	struct wl_egl_pixmap		*dummy_pixmap;
-	EGLSurface			 dummy_egl_surface;
-
 	struct {
 		struct wl_display *wl_display;
+		struct wl_registry *registry;
 		struct wl_compositor *compositor;
 		struct wl_shell *shell;
 		struct wl_output *output;
@@ -75,17 +73,17 @@ struct wayland_compositor {
 
 struct wayland_output {
 	struct weston_output	base;
-
+	struct wl_listener	frame_listener;
 	struct {
 		struct wl_surface	*surface;
 		struct wl_shell_surface	*shell_surface;
 		struct wl_egl_window	*egl_window;
 	} parent;
-	EGLSurface egl_surface;
 	struct weston_mode	mode;
 };
 
 struct wayland_input {
+	struct weston_seat base;
 	struct wayland_compositor *compositor;
 	struct wl_seat *seat;
 	struct wl_pointer *pointer;
@@ -93,6 +91,9 @@ struct wayland_input {
 	struct wl_touch *touch;
 	struct wl_list link;
 	uint32_t key_serial;
+	uint32_t enter_serial;
+	int focus;
+	struct wayland_output *output;
 };
 
 
@@ -190,7 +191,6 @@ draw_border(struct wayland_output *output)
 
 	glUniform1i(shader->tex_uniforms[0], 0);
 	glUniform1f(shader->alpha_uniform, 1);
-	glUniform1f(shader->texwidth_uniform, 1);
 
 	n = texture_border(output);
 
@@ -239,11 +239,6 @@ create_border(struct wayland_compositor *c)
 		     0, GL_BGRA_EXT, GL_UNSIGNED_BYTE,
 		     pixman_image_get_data(image));
 
-	c->border.top = 25;
-	c->border.bottom = 50;
-	c->border.left = 25;
-	c->border.right = 25;
-
 	pixman_image_unref(image);
 }
 
@@ -261,10 +256,6 @@ wayland_compositor_init_egl(struct wayland_compositor *c)
 		EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
 		EGL_NONE
 	};
-	static const EGLint context_attribs[] = {
-		EGL_CONTEXT_CLIENT_VERSION, 2,
-		EGL_NONE
-	};
 
 	c->base.egl_display = eglGetDisplay(c->parent.wl_display);
 	if (c->base.egl_display == NULL) {
@@ -277,36 +268,9 @@ wayland_compositor_init_egl(struct wayland_compositor *c)
 		return -1;
 	}
 
-	if (!eglBindAPI(EGL_OPENGL_ES_API)) {
-		weston_log("failed to bind EGL_OPENGL_ES_API\n");
-		return -1;
-	}
    	if (!eglChooseConfig(c->base.egl_display, config_attribs,
 			     &c->base.egl_config, 1, &n) || n == 0) {
 		weston_log("failed to choose config: %d\n", n);
-		return -1;
-	}
-
-	c->base.egl_context =
-		eglCreateContext(c->base.egl_display, c->base.egl_config,
-				 EGL_NO_CONTEXT, context_attribs);
-	if (c->base.egl_context == NULL) {
-		weston_log("failed to create context\n");
-		return -1;
-	}
-
-	c->dummy_pixmap = wl_egl_pixmap_create(10, 10, 0);
-	if (!c->dummy_pixmap) {
-		weston_log("failure to create dummy_pixmap\n");
-		return -1;
-	}
-
-	c->dummy_egl_surface =
-		eglCreatePixmapSurface(c->base.egl_display, c->base.egl_config,
-				       c->dummy_pixmap, NULL);
-	if (!eglMakeCurrent(c->base.egl_display, c->dummy_egl_surface,
-			    c->dummy_egl_surface, c->base.egl_context)) {
-		weston_log("failed to make context current\n");
 		return -1;
 	}
 
@@ -327,34 +291,31 @@ static const struct wl_callback_listener frame_listener = {
 };
 
 static void
+wayland_output_frame_notify(struct wl_listener *listener, void *data)
+{
+	struct wayland_output *output =
+		container_of(listener,
+			     struct wayland_output, frame_listener);
+
+	draw_border(output);
+}
+
+static void
 wayland_output_repaint(struct weston_output *output_base,
 		       pixman_region32_t *damage)
 {
 	struct wayland_output *output = (struct wayland_output *) output_base;
-	struct wayland_compositor *compositor =
-		(struct wayland_compositor *) output->base.compositor;
+	struct weston_compositor *ec = output->base.compositor;
 	struct wl_callback *callback;
-	struct weston_surface *surface;
 
-	if (!eglMakeCurrent(compositor->base.egl_display, output->egl_surface,
-			    output->egl_surface,
-			    compositor->base.egl_context)) {
-		weston_log("failed to make current\n");
-		return;
-	}
-
-	wl_list_for_each_reverse(surface, &compositor->base.surface_list, link)
-		weston_surface_draw(surface, &output->base, damage);
-
-	draw_border(output);
-
-	wl_signal_emit(&output->base.frame_signal, output);
-
-	eglSwapBuffers(compositor->base.egl_display, output->egl_surface);
 	callback = wl_surface_frame(output->parent.surface);
 	wl_callback_add_listener(callback, &frame_listener, output);
 
-	return;
+	ec->renderer->repaint_output(&output->base, damage);
+
+	pixman_region32_subtract(&ec->primary_plane.damage,
+				 &ec->primary_plane.damage, damage);
+
 }
 
 static void
@@ -363,7 +324,7 @@ wayland_output_destroy(struct weston_output *output_base)
 	struct wayland_output *output = (struct wayland_output *) output_base;
 	struct weston_compositor *ec = output->base.compositor;
 
-	eglDestroySurface(ec->egl_display, output->egl_surface);
+	eglDestroySurface(ec->egl_display, output->base.egl_surface);
 	wl_egl_window_destroy(output->parent.egl_window);
 	free(output);
 
@@ -393,12 +354,14 @@ wayland_compositor_create_output(struct wayland_compositor *c,
 
 	output->base.current = &output->mode;
 	weston_output_init(&output->base, &c->base, 0, 0, width, height,
-			 WL_OUTPUT_FLIPPED);
+						WL_OUTPUT_TRANSFORM_NORMAL);
 
 	output->base.border.top = c->border.top;
 	output->base.border.bottom = c->border.bottom;
 	output->base.border.left = c->border.left;
 	output->base.border.right = c->border.right;
+	output->base.make = "waywayland";
+	output->base.model = "none";
 
 	weston_output_move(&output->base, 0, 0);
 
@@ -415,19 +378,12 @@ wayland_compositor_create_output(struct wayland_compositor *c,
 		goto cleanup_output;
 	}
 
-	output->egl_surface =
+	output->base.egl_surface =
 		eglCreateWindowSurface(c->base.egl_display, c->base.egl_config,
 				       output->parent.egl_window, NULL);
-	if (!output->egl_surface) {
+	if (!output->base.egl_surface) {
 		weston_log("failed to create window surface\n");
 		goto cleanup_window;
-	}
-
-	if (!eglMakeCurrent(c->base.egl_display, output->egl_surface,
-			    output->egl_surface, c->base.egl_context)) {
-		weston_log("failed to make surface current\n");
-		goto cleanup_surface;
-		return -1;
 	}
 
 	output->parent.shell_surface =
@@ -447,10 +403,11 @@ wayland_compositor_create_output(struct wayland_compositor *c,
 
 	wl_list_insert(c->base.output_list.prev, &output->base.link);
 
+	output->frame_listener.notify = wayland_output_frame_notify;
+	wl_signal_add(&output->base.frame_signal, &output->frame_listener);
+
 	return 0;
 
-cleanup_surface:
-	eglDestroySurface(c->base.egl_display, output->egl_surface);
 cleanup_window:
 	wl_egl_window_destroy(output->parent.egl_window);
 cleanup_output:
@@ -525,6 +482,34 @@ static const struct wl_output_listener output_listener = {
 	display_handle_mode
 };
 
+static void
+check_focus(struct wayland_input *input, wl_fixed_t x, wl_fixed_t y)
+{
+	struct wayland_compositor *c = input->compositor;
+	int width, height, inside;
+
+	width = input->output->mode.width;
+	height = input->output->mode.height;
+
+	inside = c->border.left <= wl_fixed_to_int(x) &&
+		wl_fixed_to_int(x) < width + c->border.left &&
+		c->border.top <= wl_fixed_to_int(y) &&
+		wl_fixed_to_int(y) < height + c->border.top;
+
+	if (!input->focus && inside) {
+		notify_pointer_focus(&input->base, &input->output->base,
+				     x - wl_fixed_from_int(c->border.left),
+				     y = wl_fixed_from_int(c->border.top));
+		wl_pointer_set_cursor(input->pointer,
+				      input->enter_serial, NULL, 0, 0);
+	} else if (input->focus && !inside) {
+		notify_pointer_focus(&input->base, NULL, 0, 0);
+		/* FIXME: Should set default cursor here. */
+	}
+
+	input->focus = inside;
+}
+
 /* parent input interface */
 static void
 input_handle_pointer_enter(void *data, struct wl_pointer *pointer,
@@ -532,14 +517,12 @@ input_handle_pointer_enter(void *data, struct wl_pointer *pointer,
 			   wl_fixed_t x, wl_fixed_t y)
 {
 	struct wayland_input *input = data;
-	struct wayland_output *output;
-	struct wayland_compositor *c = input->compositor;
 
 	/* XXX: If we get a modifier event immediately before the focus,
 	 *      we should try to keep the same serial. */
-	output = wl_surface_get_user_data(surface);
-	notify_pointer_focus(&c->base.seat->seat, &output->base, x, y);
-	wl_pointer_set_cursor(input->pointer, serial, NULL, 0, 0);
+	input->enter_serial = serial;
+	input->output = wl_surface_get_user_data(surface);
+	check_focus(input, x, y);
 }
 
 static void
@@ -547,9 +530,10 @@ input_handle_pointer_leave(void *data, struct wl_pointer *pointer,
 			   uint32_t serial, struct wl_surface *surface)
 {
 	struct wayland_input *input = data;
-	struct wayland_compositor *c = input->compositor;
 
-	notify_pointer_focus(&c->base.seat->seat, NULL, 0, 0);
+	notify_pointer_focus(&input->base, NULL, 0, 0);
+	input->output = NULL;
+	input->focus = 0;
 }
 
 static void
@@ -559,9 +543,11 @@ input_handle_motion(void *data, struct wl_pointer *pointer,
 	struct wayland_input *input = data;
 	struct wayland_compositor *c = input->compositor;
 
-	notify_motion(&c->base.seat->seat, time,
-		      x - wl_fixed_from_int(c->border.left),
-		      y - wl_fixed_from_int(c->border.top));
+	check_focus(input, x, y);
+	if (input->focus)
+		notify_motion(&input->base, time,
+			      x - wl_fixed_from_int(c->border.left),
+			      y - wl_fixed_from_int(c->border.top));
 }
 
 static void
@@ -570,10 +556,9 @@ input_handle_button(void *data, struct wl_pointer *pointer,
 		    uint32_t state_w)
 {
 	struct wayland_input *input = data;
-	struct wayland_compositor *c = input->compositor;
 	enum wl_pointer_button_state state = state_w;
 
-	notify_button(&c->base.seat->seat, time, button, state);
+	notify_button(&input->base, time, button, state);
 }
 
 static void
@@ -581,9 +566,8 @@ input_handle_axis(void *data, struct wl_pointer *pointer,
 		  uint32_t time, uint32_t axis, wl_fixed_t value)
 {
 	struct wayland_input *input = data;
-	struct wayland_compositor *c = input->compositor;
 
-	notify_axis(&c->base.seat->seat, time, axis, value);
+	notify_axis(&input->base, time, axis, value);
 }
 
 static const struct wl_pointer_listener pointer_listener = {
@@ -630,7 +614,7 @@ input_handle_keymap(void *data, struct wl_keyboard *keyboard, uint32_t format,
 		return;
 	}
 
-	weston_seat_init_keyboard(input->compositor->base.seat, keymap);
+	weston_seat_init_keyboard(&input->base, keymap);
 	xkb_map_unref(keymap);
 }
 
@@ -642,11 +626,10 @@ input_handle_keyboard_enter(void *data,
 			    struct wl_array *keys)
 {
 	struct wayland_input *input = data;
-	struct wayland_compositor *c = input->compositor;
 
 	/* XXX: If we get a modifier event immediately before the focus,
 	 *      we should try to keep the same serial. */
-	notify_keyboard_focus_in(&c->base.seat->seat, keys,
+	notify_keyboard_focus_in(&input->base, keys,
 				 STATE_UPDATE_AUTOMATIC);
 }
 
@@ -657,9 +640,8 @@ input_handle_keyboard_leave(void *data,
 			    struct wl_surface *surface)
 {
 	struct wayland_input *input = data;
-	struct wayland_compositor *c = input->compositor;
 
-	notify_keyboard_focus_out(&c->base.seat->seat);
+	notify_keyboard_focus_out(&input->base);
 }
 
 static void
@@ -667,10 +649,9 @@ input_handle_key(void *data, struct wl_keyboard *keyboard,
 		 uint32_t serial, uint32_t time, uint32_t key, uint32_t state)
 {
 	struct wayland_input *input = data;
-	struct wayland_compositor *c = input->compositor;
 
 	input->key_serial = serial;
-	notify_key(&c->base.seat->seat, time, key,
+	notify_key(&input->base, time, key,
 		   state ? WL_KEYBOARD_KEY_STATE_PRESSED :
 			   WL_KEYBOARD_KEY_STATE_RELEASED,
 		   STATE_UPDATE_NONE);
@@ -694,10 +675,10 @@ input_handle_modifiers(void *data, struct wl_keyboard *keyboard,
 	else
 		serial_out = wl_display_next_serial(c->base.wl_display);
 
-	xkb_state_update_mask(c->base.seat->xkb_state.state,
+	xkb_state_update_mask(input->base.xkb_state.state,
 			      mods_depressed, mods_latched,
 			      mods_locked, 0, 0, group);
-	notify_modifiers(&c->base.seat->seat, serial_out);
+	notify_modifiers(&input->base, serial_out);
 }
 
 static const struct wl_keyboard_listener keyboard_listener = {
@@ -719,7 +700,7 @@ input_handle_capabilities(void *data, struct wl_seat *seat,
 		wl_pointer_set_user_data(input->pointer, input);
 		wl_pointer_add_listener(input->pointer, &pointer_listener,
 					input);
-		weston_seat_init_pointer(input->compositor->base.seat);
+		weston_seat_init_pointer(&input->base);
 	} else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && input->pointer) {
 		wl_pointer_destroy(input->pointer);
 		input->pointer = NULL;
@@ -751,9 +732,10 @@ display_add_seat(struct wayland_compositor *c, uint32_t id)
 
 	memset(input, 0, sizeof *input);
 
+	weston_seat_init(&input->base, &c->base);
 	input->compositor = c;
-	input->seat = wl_display_bind(c->parent.wl_display, id,
-				      &wl_seat_interface);
+	input->seat = wl_registry_bind(c->parent.registry, id,
+				       &wl_seat_interface, 1);
 	wl_list_insert(c->input_list.prev, &input->link);
 
 	wl_seat_add_listener(input->seat, &seat_listener, input);
@@ -761,71 +743,62 @@ display_add_seat(struct wayland_compositor *c, uint32_t id)
 }
 
 static void
-display_handle_global(struct wl_display *display, uint32_t id,
-		      const char *interface, uint32_t version, void *data)
+registry_handle_global(void *data, struct wl_registry *registry, uint32_t name,
+		       const char *interface, uint32_t version)
 {
 	struct wayland_compositor *c = data;
 
 	if (strcmp(interface, "wl_compositor") == 0) {
 		c->parent.compositor =
-			wl_display_bind(display, id, &wl_compositor_interface);
+			wl_registry_bind(registry, name,
+					 &wl_compositor_interface, 1);
 	} else if (strcmp(interface, "wl_output") == 0) {
 		c->parent.output =
-			wl_display_bind(display, id, &wl_output_interface);
+			wl_registry_bind(registry, name,
+					 &wl_output_interface, 1);
 		wl_output_add_listener(c->parent.output, &output_listener, c);
 	} else if (strcmp(interface, "wl_shell") == 0) {
 		c->parent.shell =
-			wl_display_bind(display, id, &wl_shell_interface);
+			wl_registry_bind(registry, name,
+					 &wl_shell_interface, 1);
 	} else if (strcmp(interface, "wl_seat") == 0) {
-		display_add_seat(c, id);
+		display_add_seat(c, name);
 	}
 }
 
-static int
-update_event_mask(uint32_t mask, void *data)
-{
-	struct wayland_compositor *c = data;
-
-	c->parent.event_mask = mask;
-	if (c->parent.wl_source)
-		wl_event_source_fd_update(c->parent.wl_source, mask);
-
-	return 0;
-}
+static const struct wl_registry_listener registry_listener = {
+	registry_handle_global
+};
 
 static int
 wayland_compositor_handle_event(int fd, uint32_t mask, void *data)
 {
 	struct wayland_compositor *c = data;
+	int count = 0;
 
 	if (mask & WL_EVENT_READABLE)
-		wl_display_iterate(c->parent.wl_display, WL_DISPLAY_READABLE);
+		count = wl_display_dispatch(c->parent.wl_display);
 	if (mask & WL_EVENT_WRITABLE)
-		wl_display_iterate(c->parent.wl_display, WL_DISPLAY_WRITABLE);
+		wl_display_flush(c->parent.wl_display);
 
-	return 1;
+	if (mask == 0) {
+		count = wl_display_dispatch_pending(c->parent.wl_display);
+		wl_display_flush(c->parent.wl_display);
+	}
+
+	return count;
 }
 
-static int
-wayland_input_create(struct wayland_compositor *c)
+static void
+wayland_restore(struct weston_compositor *ec)
 {
-	struct weston_seat *seat;
-
-	seat = malloc(sizeof *seat);
-	if (seat == NULL)
-		return -1;
-
-	memset(seat, 0, sizeof *seat);
-	weston_seat_init(seat, &c->base);
-
-	c->base.seat = seat;
-
-	return 0;
 }
 
 static void
 wayland_destroy(struct weston_compositor *ec)
 {
+	gles2_renderer_destroy(ec);
+
 	weston_compositor_shutdown(ec);
 
 	free(ec);
@@ -850,9 +823,6 @@ wayland_compositor_create(struct wl_display *display,
 				   config_file) < 0)
 		goto err_free;
 
-	if (wayland_input_create(c) < 0)
-		goto err_compositor;
-
 	c->parent.wl_display = wl_display_connect(display_name);
 
 	if (c->parent.wl_display == NULL) {
@@ -861,32 +831,43 @@ wayland_compositor_create(struct wl_display *display,
 	}
 
 	wl_list_init(&c->input_list);
-	wl_display_add_global_listener(c->parent.wl_display,
-				display_handle_global, c);
-
-	wl_display_iterate(c->parent.wl_display, WL_DISPLAY_READABLE);
+	c->parent.registry = wl_display_get_registry(c->parent.wl_display);
+	wl_registry_add_listener(c->parent.registry, &registry_listener, c);
+	wl_display_dispatch(c->parent.wl_display);
 
 	c->base.wl_display = display;
 	if (wayland_compositor_init_egl(c) < 0)
 		goto err_display;
 
 	c->base.destroy = wayland_destroy;
+	c->base.restore = wayland_restore;
 
-	if (weston_compositor_init_gl(&c->base) < 0)
-		goto err_display;
+	c->border.top = 30;
+	c->border.bottom = 24;
+	c->border.left = 25;
+	c->border.right = 26;
 
-	create_border(c);
+	/* requires border fields */
 	if (wayland_compositor_create_output(c, width, height) < 0)
 		goto err_display;
 
+	/* requires wayland_compositor_create_output */
+	if (gles2_renderer_init(&c->base) < 0)
+		goto err_display;
+
+	/* requires gles2_renderer_init */
+	create_border(c);
+
 	loop = wl_display_get_event_loop(c->base.wl_display);
 
-	fd = wl_display_get_fd(c->parent.wl_display, update_event_mask, c);
+	fd = wl_display_get_fd(c->parent.wl_display);
 	c->parent.wl_source =
-		wl_event_loop_add_fd(loop, fd, c->parent.event_mask,
+		wl_event_loop_add_fd(loop, fd, WL_EVENT_READABLE,
 				     wayland_compositor_handle_event, c);
 	if (c->parent.wl_source == NULL)
 		goto err_display;
+
+	wl_event_source_check(c->parent.wl_source);
 
 	return &c->base;
 

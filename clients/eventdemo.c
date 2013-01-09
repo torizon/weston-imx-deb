@@ -70,6 +70,9 @@ static int log_key = 0;
 /** set to log button events */
 static int log_button = 0;
 
+/** set to log axis events */
+static int log_axis = 0;
+
 /** set to log motion events */
 static int log_motion = 0;
 
@@ -90,7 +93,7 @@ struct eventdemo {
 
 /**
  * \brief CALLBACK function, Wayland requests the window to redraw.
- * \param window window to be redrawn
+ * \param widget widget to be redrawn
  * \param data user data associated to the window
  *
  * Draws a red rectangle as demonstration of per-window data.
@@ -126,7 +129,7 @@ redraw_handler(struct widget *widget, void *data)
 
 /**
  * \brief CALLBACK function, Wayland requests the window to resize.
- * \param window window to be resized
+ * \param widget widget to be resized
  * \param width desired width
  * \param height desired height
  * \param data user data associated to the window
@@ -205,9 +208,9 @@ key_handler(struct window *window, struct input *input, uint32_t time,
 
 /**
  * \brief CALLBACK function, Wayland informs about button event
- * \param window window
+ * \param widget widget
  * \param input input device that caused the button event
- * \param time time the event happend
+ * \param time time the event happened
  * \param button button
  * \param state pressed or released
  * \param data user data associated to the window
@@ -230,10 +233,33 @@ button_handler(struct widget *widget, struct input *input, uint32_t time,
 }
 
 /**
+ * \brief CALLBACK function, Wayland informs about axis event
+ * \param widget widget
+ * \param input input device that caused the axis event
+ * \param time time the event happened
+ * \param axis vertical or horizontal
+ * \param value amount of scrolling
+ * \param data user data associated to the widget
+ */
+static void
+axis_handler(struct widget *widget, struct input *input, uint32_t time,
+	     uint32_t axis, wl_fixed_t value, void *data)
+{
+	if (!log_axis)
+		return;
+
+	printf("axis time: %d, axis: %s, value: %f\n",
+	       time,
+	       axis == WL_POINTER_AXIS_VERTICAL_SCROLL ? "vertical" :
+							 "horizontal",
+	       wl_fixed_to_double(value));
+}
+
+/**
  * \brief CALLBACK function, Waylands informs about pointer motion
- * \param window window
+ * \param widget widget
  * \param input input device that caused the motion event
- * \param time time the event happend
+ * \param time time the event happened
  * \param x absolute x position
  * \param y absolute y position
  * \param sx x position relative to the window
@@ -274,8 +300,16 @@ eventdemo_create(struct display *d)
 		return NULL;
 
 	e->window = window_create(d);
-	e->widget = frame_create(e->window, e);
-	window_set_title(e->window, title);
+
+	if (noborder) {
+		/* Demonstrate how to create a borderless window.
+		 * Move windows with META + left mouse button.
+		 */
+		e->widget = window_add_widget(e->window, e);
+	} else {
+		e->widget = frame_create(e->window, e);
+		window_set_title(e->window, title);
+	}
 	e->display = d;
 
 	/* The eventdemo window draws a red rectangle as a demonstration
@@ -309,11 +343,8 @@ eventdemo_create(struct display *d)
 	/* Set the callback motion handler for the window */
 	widget_set_motion_handler(e->widget, motion_handler);
 
-	/* Demonstrate how to create a borderless window.
-	   Move windows with META + left mouse button.
-	 */
-	if (noborder) {
-	}
+	/* Set the callback axis handler for the window */
+	widget_set_axis_handler(e->widget, axis_handler);
 
 	/* Initial drawing of the window */
 	window_schedule_resize(e->window, width, height);
@@ -345,6 +376,7 @@ static const struct weston_option eventdemo_options[] = {
 	{ WESTON_OPTION_BOOLEAN, "log-focus", '0', &log_focus },
 	{ WESTON_OPTION_BOOLEAN, "log-key", '0', &log_key },
 	{ WESTON_OPTION_BOOLEAN, "log-button", '0', &log_button },
+	{ WESTON_OPTION_BOOLEAN, "log-axis", '0', &log_axis },
 	{ WESTON_OPTION_BOOLEAN, "log-motion", '0', &log_motion },
 };
 

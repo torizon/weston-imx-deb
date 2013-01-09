@@ -29,12 +29,11 @@
 
 #include "compositor.h"
 #include "evdev.h"
-#include "evdev-private.h"
-#include "launcher-util.h"
-#include "log.h"
 
-static void
-evdev_led_update(struct weston_seat *seat_base, enum weston_led leds)
+#define DEFAULT_AXIS_STEP_DISTANCE wl_fixed_from_int(10)
+
+void
+evdev_led_update(struct evdev_device *device, enum weston_led leds)
 {
 	static const struct {
 		enum weston_led weston;
@@ -44,10 +43,11 @@ evdev_led_update(struct weston_seat *seat_base, enum weston_led leds)
 		{ LED_CAPS_LOCK, LED_CAPSL },
 		{ LED_SCROLL_LOCK, LED_SCROLLL },
 	};
-	struct evdev_seat *seat = (struct evdev_seat *) seat_base;
-	struct evdev_input_device *device;
 	struct input_event ev[ARRAY_LENGTH(map)];
 	unsigned int i;
+
+	if (!device->caps & EVDEV_KEYBOARD)
+		return;
 
 	memset(ev, 0, sizeof(ev));
 	for (i = 0; i < ARRAY_LENGTH(map); i++) {
@@ -56,15 +56,12 @@ evdev_led_update(struct weston_seat *seat_base, enum weston_led leds)
 		ev[i].value = !!(leds & map[i].weston);
 	}
 
-	wl_list_for_each(device, &seat->devices_list, link) {
-		if (device->caps & EVDEV_KEYBOARD)
-			write(device->fd, ev, sizeof ev);
-	}
+	i = write(device->fd, ev, sizeof ev);
+	(void)i; /* no, we really don't care about the return value */
 }
 
 static inline void
-evdev_process_key(struct evdev_input_device *device,
-                        struct input_event *e, int time)
+evdev_process_key(struct evdev_device *device, struct input_event *e, int time)
 {
 	if (e->value == 2)
 		return;
@@ -78,14 +75,14 @@ evdev_process_key(struct evdev_input_device *device,
 	case BTN_FORWARD:
 	case BTN_BACK:
 	case BTN_TASK:
-		notify_button(&device->master->base.seat,
+		notify_button(device->seat,
 			      time, e->code,
 			      e->value ? WL_POINTER_BUTTON_STATE_PRESSED :
 					 WL_POINTER_BUTTON_STATE_RELEASED);
 		break;
 
 	default:
-		notify_key(&device->master->base.seat,
+		notify_key(device->seat,
 			   time, e->code,
 			   e->value ? WL_KEYBOARD_KEY_STATE_PRESSED :
 				      WL_KEYBOARD_KEY_STATE_RELEASED,
@@ -95,8 +92,7 @@ evdev_process_key(struct evdev_input_device *device,
 }
 
 static void
-evdev_process_touch(struct evdev_input_device *device,
-		    struct input_event *e)
+evdev_process_touch(struct evdev_device *device, struct input_event *e)
 {
 	const int screen_width = device->output->current->width;
 	const int screen_height = device->output->current->height;
@@ -129,7 +125,7 @@ evdev_process_touch(struct evdev_input_device *device,
 }
 
 static inline void
-evdev_process_absolute_motion(struct evdev_input_device *device,
+evdev_process_absolute_motion(struct evdev_device *device,
 			      struct input_event *e)
 {
 	const int screen_width = device->output->current->width;
@@ -154,7 +150,7 @@ evdev_process_absolute_motion(struct evdev_input_device *device,
 }
 
 static inline void
-evdev_process_relative(struct evdev_input_device *device,
+evdev_process_relative(struct evdev_device *device,
 		       struct input_event *e, uint32_t time)
 {
 	switch (e->code) {
@@ -167,23 +163,40 @@ evdev_process_relative(struct evdev_input_device *device,
 		device->pending_events |= EVDEV_RELATIVE_MOTION;
 		break;
 	case REL_WHEEL:
-		notify_axis(&device->master->base.seat,
-			      time,
-			      WL_POINTER_AXIS_VERTICAL_SCROLL,
-			      wl_fixed_from_int(e->value));
+		switch (e->value) {
+		case -1:
+			/* Scroll down */
+		case 1:
+			/* Scroll up */
+			notify_axis(device->seat,
+				    time,
+				    WL_POINTER_AXIS_VERTICAL_SCROLL,
+				    -1 * e->value * DEFAULT_AXIS_STEP_DISTANCE);
+			break;
+		default:
+			break;
+		}
 		break;
 	case REL_HWHEEL:
-		notify_axis(&device->master->base.seat,
-			      time,
-			      WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-			      wl_fixed_from_int(e->value));
-		break;
+		switch (e->value) {
+		case -1:
+			/* Scroll left */
+		case 1:
+			/* Scroll right */
+			notify_axis(device->seat,
+				    time,
+				    WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+				    e->value * DEFAULT_AXIS_STEP_DISTANCE);
+			break;
+		default:
+			break;
+
+		}
 	}
 }
 
 static inline void
-evdev_process_absolute(struct evdev_input_device *device,
-		       struct input_event *e)
+evdev_process_absolute(struct evdev_device *device, struct input_event *e)
 {
 	if (device->is_mt) {
 		evdev_process_touch(device, e);
@@ -202,6 +215,7 @@ is_motion_event(struct input_event *e)
 		case REL_Y:
 			return 1;
 		}
+		break;
 	case EV_ABS:
 		switch (e->code) {
 		case ABS_X:
@@ -216,15 +230,15 @@ is_motion_event(struct input_event *e)
 }
 
 static void
-evdev_flush_motion(struct evdev_input_device *device, uint32_t time)
+evdev_flush_motion(struct evdev_device *device, uint32_t time)
 {
-	struct weston_seat *master = &device->master->base;
+	struct weston_seat *master = device->seat;
 
 	if (!device->pending_events)
 		return;
 
 	if (device->pending_events & EVDEV_RELATIVE_MOTION) {
-		notify_motion(&master->seat, time,
+		notify_motion(master, time,
 			      master->seat.pointer->x + device->rel.dx,
 			      master->seat.pointer->y + device->rel.dy);
 		device->pending_events &= ~EVDEV_RELATIVE_MOTION;
@@ -232,7 +246,7 @@ evdev_flush_motion(struct evdev_input_device *device, uint32_t time)
 		device->rel.dy = 0;
 	}
 	if (device->pending_events & EVDEV_ABSOLUTE_MT_DOWN) {
-		notify_touch(&master->seat, time,
+		notify_touch(master, time,
 			     device->mt.slot,
 			     wl_fixed_from_int(device->mt.x[device->mt.slot]),
 			     wl_fixed_from_int(device->mt.y[device->mt.slot]),
@@ -241,7 +255,7 @@ evdev_flush_motion(struct evdev_input_device *device, uint32_t time)
 		device->pending_events &= ~EVDEV_ABSOLUTE_MT_MOTION;
 	}
 	if (device->pending_events & EVDEV_ABSOLUTE_MT_MOTION) {
-		notify_touch(&master->seat, time,
+		notify_touch(master, time,
 			     device->mt.slot,
 			     wl_fixed_from_int(device->mt.x[device->mt.slot]),
 			     wl_fixed_from_int(device->mt.y[device->mt.slot]),
@@ -250,12 +264,12 @@ evdev_flush_motion(struct evdev_input_device *device, uint32_t time)
 		device->pending_events &= ~EVDEV_ABSOLUTE_MT_MOTION;
 	}
 	if (device->pending_events & EVDEV_ABSOLUTE_MT_UP) {
-		notify_touch(&master->seat, time, device->mt.slot, 0, 0,
+		notify_touch(master, time, device->mt.slot, 0, 0,
 			     WL_TOUCH_UP);
 		device->pending_events &= ~EVDEV_ABSOLUTE_MT_UP;
 	}
 	if (device->pending_events & EVDEV_ABSOLUTE_MOTION) {
-		notify_motion(&master->seat, time,
+		notify_motion(master, time,
 			      wl_fixed_from_int(device->abs.x),
 			      wl_fixed_from_int(device->abs.y));
 		device->pending_events &= ~EVDEV_ABSOLUTE_MOTION;
@@ -264,7 +278,7 @@ evdev_flush_motion(struct evdev_input_device *device, uint32_t time)
 
 static void
 fallback_process(struct evdev_dispatch *dispatch,
-		 struct evdev_input_device *device,
+		 struct evdev_device *device,
 		 struct input_event *event,
 		 uint32_t time)
 {
@@ -305,7 +319,7 @@ fallback_dispatch_create(void)
 }
 
 static void
-evdev_process_events(struct evdev_input_device *device,
+evdev_process_events(struct evdev_device *device,
 		     struct input_event *ev, int count)
 {
 	struct evdev_dispatch *dispatch = device->dispatch;
@@ -332,14 +346,14 @@ evdev_process_events(struct evdev_input_device *device,
 }
 
 static int
-evdev_input_device_data(int fd, uint32_t mask, void *data)
+evdev_device_data(int fd, uint32_t mask, void *data)
 {
 	struct weston_compositor *ec;
-	struct evdev_input_device *device = data;
+	struct evdev_device *device = data;
 	struct input_event ev[32];
 	int len;
 
-	ec = device->master->base.compositor;
+	ec = device->seat->compositor;
 	if (!ec->focus)
 		return 1;
 
@@ -355,7 +369,7 @@ evdev_input_device_data(int fd, uint32_t mask, void *data)
 			len = read(fd, &ev, sizeof ev);
 
 		if (len < 0 || len % sizeof ev[0] != 0) {
-			/* FIXME: call device_removed when errno is ENODEV. */
+			/* FIXME: call evdev_device_destroy when errno is ENODEV. */
 			return 1;
 		}
 
@@ -367,7 +381,7 @@ evdev_input_device_data(int fd, uint32_t mask, void *data)
 }
 
 static int
-evdev_configure_device(struct evdev_input_device *device)
+evdev_configure_device(struct evdev_device *device)
 {
 	struct input_absinfo absinfo;
 	unsigned long ev_bits[NBITS(EV_MAX)];
@@ -400,6 +414,14 @@ evdev_configure_device(struct evdev_input_device *device)
 			device->caps |= EVDEV_MOTION_ABS;
 		}
 		if (TEST_BIT(abs_bits, ABS_MT_SLOT)) {
+			ioctl(device->fd, EVIOCGABS(ABS_MT_POSITION_X),
+			      &absinfo);
+			device->abs.min_x = absinfo.minimum;
+			device->abs.max_x = absinfo.maximum;
+			ioctl(device->fd, EVIOCGABS(ABS_MT_POSITION_Y),
+			      &absinfo);
+			device->abs.min_y = absinfo.minimum;
+			device->abs.max_y = absinfo.maximum;
 			device->is_mt = 1;
 			device->mt.slot = 0;
 			device->caps |= EVDEV_TOUCH;
@@ -441,36 +463,50 @@ evdev_configure_device(struct evdev_input_device *device)
 	/* This rule tries to catch accelerometer devices and opt out. We may
 	 * want to adjust the protocol later adding a proper event for dealing
 	 * with accelerometers and implement here accordingly */
-	if (has_abs && !has_key && !device->is_mt)
+	if (has_abs && !has_key && !device->is_mt) {
+		weston_log("input device %s, %s "
+			   "ignored: unsupported device type\n",
+			   device->devname, device->devnode);
 		return -1;
+	}
 
 	if ((device->caps &
-	     (EVDEV_MOTION_ABS | EVDEV_MOTION_REL | EVDEV_BUTTON)))
-		weston_seat_init_pointer(&device->master->base);
-	if ((device->caps & EVDEV_KEYBOARD))
-		weston_seat_init_keyboard(&device->master->base, NULL);
-	if ((device->caps & EVDEV_TOUCH))
-		weston_seat_init_touch(&device->master->base);
+	     (EVDEV_MOTION_ABS | EVDEV_MOTION_REL | EVDEV_BUTTON))) {
+		weston_seat_init_pointer(device->seat);
+		weston_log("input device %s, %s is a pointer\n",
+			   device->devname, device->devnode);
+	}
+	if ((device->caps & EVDEV_KEYBOARD)) {
+		weston_seat_init_keyboard(device->seat, NULL);
+		weston_log("input device %s, %s is a keyboard\n",
+			   device->devname, device->devnode);
+	}
+	if ((device->caps & EVDEV_TOUCH)) {
+		weston_seat_init_touch(device->seat);
+		weston_log("input device %s, %s is a touch device\n",
+			   device->devname, device->devnode);
+	}
 
 	return 0;
 }
 
-static struct evdev_input_device *
-evdev_input_device_create(struct evdev_seat *master,
-			  struct wl_display *display, const char *path)
+struct evdev_device *
+evdev_device_create(struct weston_seat *seat, const char *path, int device_fd)
 {
-	struct evdev_input_device *device;
+	struct evdev_device *device;
 	struct weston_compositor *ec;
+	char devname[256] = "unknown";
 
 	device = malloc(sizeof *device);
 	if (device == NULL)
 		return NULL;
+	memset(device, 0, sizeof *device);
 
-	ec = master->base.compositor;
+	ec = seat->compositor;
 	device->output =
 		container_of(ec->output_list.next, struct weston_output, link);
 
-	device->master = master;
+	device->seat = seat;
 	device->is_mt = 0;
 	device->mtdev = NULL;
 	device->devnode = strdup(path);
@@ -478,13 +514,10 @@ evdev_input_device_create(struct evdev_seat *master,
 	device->rel.dx = 0;
 	device->rel.dy = 0;
 	device->dispatch = NULL;
+	device->fd = device_fd;
 
-	/* Use non-blocking mode so that we can loop on read on
-	 * evdev_input_device_data() until all events on the fd are
-	 * read.  mtdev_get() also expects this. */
-	device->fd = weston_launcher_open(ec, path, O_RDWR | O_NONBLOCK);
-	if (device->fd < 0)
-		goto err0;
+	ioctl(device->fd, EVIOCGNAME(sizeof(devname)), devname);
+	device->devname = strdup(devname);
 
 	if (evdev_configure_device(device) == -1)
 		goto err1;
@@ -504,47 +537,23 @@ evdev_input_device_create(struct evdev_seat *master,
 
 	device->source = wl_event_loop_add_fd(ec->input_loop, device->fd,
 					      WL_EVENT_READABLE,
-					      evdev_input_device_data, device);
+					      evdev_device_data, device);
 	if (device->source == NULL)
 		goto err2;
-
-	wl_list_insert(master->devices_list.prev, &device->link);
 
 	return device;
 
 err2:
 	device->dispatch->interface->destroy(device->dispatch);
 err1:
-	close(device->fd);
-err0:
+	free(device->devname);
 	free(device->devnode);
 	free(device);
 	return NULL;
 }
 
-static const char default_seat[] = "seat0";
-
-static void
-device_added(struct udev_device *udev_device, struct evdev_seat *master)
-{
-	struct weston_compositor *c;
-	const char *devnode;
-	const char *device_seat;
-
-	device_seat = udev_device_get_property_value(udev_device, "ID_SEAT");
-	if (!device_seat)
-		device_seat = default_seat;
-
-	if (strcmp(device_seat, master->seat_id))
-		return;
-
-	c = master->base.compositor;
-	devnode = udev_device_get_devnode(udev_device);
-	evdev_input_device_create(master, c->wl_display, devnode);
-}
-
-static void
-device_removed(struct evdev_input_device *device)
+void
+evdev_device_destroy(struct evdev_device *device)
 {
 	struct evdev_dispatch *dispatch;
 
@@ -557,22 +566,28 @@ device_removed(struct evdev_input_device *device)
 	if (device->mtdev)
 		mtdev_close_delete(device->mtdev);
 	close(device->fd);
+	free(device->devname);
 	free(device->devnode);
 	free(device);
 }
 
-static void
-evdev_notify_keyboard_focus(struct evdev_seat *seat)
+void
+evdev_notify_keyboard_focus(struct weston_seat *seat,
+			    struct wl_list *evdev_devices)
 {
-	struct evdev_input_device *device;
+	struct evdev_device *device;
 	struct wl_array keys;
 	unsigned int i, set;
-	char evdev_keys[(KEY_CNT + 7) / 8], all_keys[(KEY_CNT + 7) / 8];
+	char evdev_keys[(KEY_CNT + 7) / 8];
+	char all_keys[(KEY_CNT + 7) / 8];
 	uint32_t *k;
 	int ret;
 
+	if (!seat->seat.keyboard)
+		return;
+
 	memset(all_keys, 0, sizeof all_keys);
-	wl_list_for_each(device, &seat->devices_list, link) {
+	wl_list_for_each(device, evdev_devices, link) {
 		memset(evdev_keys, 0, sizeof evdev_keys);
 		ret = ioctl(device->fd,
 			    EVIOCGKEY(sizeof evdev_keys), evdev_keys);
@@ -594,187 +609,7 @@ evdev_notify_keyboard_focus(struct evdev_seat *seat)
 		}
 	}
 
-	notify_keyboard_focus_in(&seat->base.seat, &keys,
-				 STATE_UPDATE_AUTOMATIC);
+	notify_keyboard_focus_in(seat, &keys, STATE_UPDATE_AUTOMATIC);
 
 	wl_array_release(&keys);
-}
-
-void
-evdev_add_devices(struct udev *udev, struct weston_seat *seat_base)
-{
-	struct evdev_seat *seat = (struct evdev_seat *) seat_base;
-	struct udev_enumerate *e;
-	struct udev_list_entry *entry;
-	struct udev_device *device;
-	const char *path, *sysname;
-
-	e = udev_enumerate_new(udev);
-	udev_enumerate_add_match_subsystem(e, "input");
-	udev_enumerate_scan_devices(e);
-	udev_list_entry_foreach(entry, udev_enumerate_get_list_entry(e)) {
-		path = udev_list_entry_get_name(entry);
-		device = udev_device_new_from_syspath(udev, path);
-
-		sysname = udev_device_get_sysname(device);
-		if (strncmp("event", sysname, 5) != 0) {
-			udev_device_unref(device);
-			continue;
-		}
-
-		device_added(device, seat);
-
-		udev_device_unref(device);
-	}
-	udev_enumerate_unref(e);
-
-	evdev_notify_keyboard_focus(seat);
-
-	if (wl_list_empty(&seat->devices_list)) {
-		weston_log(
-			"warning: no input devices on entering Weston. "
-			"Possible causes:\n"
-			"\t- no permissions to read /dev/input/event*\n"
-			"\t- seats misconfigured "
-			"(Weston backend option 'seat', "
-			"udev device property ID_SEAT)\n");
-	}
-}
-
-static int
-evdev_udev_handler(int fd, uint32_t mask, void *data)
-{
-	struct evdev_seat *master = data;
-	struct udev_device *udev_device;
-	struct evdev_input_device *device, *next;
-	const char *action;
-	const char *devnode;
-
-	udev_device = udev_monitor_receive_device(master->udev_monitor);
-	if (!udev_device)
-		return 1;
-
-	action = udev_device_get_action(udev_device);
-	if (action) {
-		if (strncmp("event", udev_device_get_sysname(udev_device), 5) != 0)
-			return 0;
-
-		if (!strcmp(action, "add")) {
-			device_added(udev_device, master);
-		}
-		else if (!strcmp(action, "remove")) {
-			devnode = udev_device_get_devnode(udev_device);
-			wl_list_for_each_safe(device, next,
-					      &master->devices_list, link)
-				if (!strcmp(device->devnode, devnode)) {
-					device_removed(device);
-					break;
-				}
-		}
-	}
-	udev_device_unref(udev_device);
-
-	return 0;
-}
-
-int
-evdev_enable_udev_monitor(struct udev *udev, struct weston_seat *seat_base)
-{
-	struct evdev_seat *master = (struct evdev_seat *) seat_base;
-	struct wl_event_loop *loop;
-	struct weston_compositor *c = master->base.compositor;
-	int fd;
-
-	master->udev_monitor = udev_monitor_new_from_netlink(udev, "udev");
-	if (!master->udev_monitor) {
-		weston_log("udev: failed to create the udev monitor\n");
-		return 0;
-	}
-
-	udev_monitor_filter_add_match_subsystem_devtype(master->udev_monitor,
-			"input", NULL);
-
-	if (udev_monitor_enable_receiving(master->udev_monitor)) {
-		weston_log("udev: failed to bind the udev monitor\n");
-		udev_monitor_unref(master->udev_monitor);
-		return 0;
-	}
-
-	loop = wl_display_get_event_loop(c->wl_display);
-	fd = udev_monitor_get_fd(master->udev_monitor);
-	master->udev_monitor_source =
-		wl_event_loop_add_fd(loop, fd, WL_EVENT_READABLE,
-				     evdev_udev_handler, master);
-	if (!master->udev_monitor_source) {
-		udev_monitor_unref(master->udev_monitor);
-		return 0;
-	}
-
-	return 1;
-}
-
-void
-evdev_disable_udev_monitor(struct weston_seat *seat_base)
-{
-	struct evdev_seat *seat = (struct evdev_seat *) seat_base;
-
-	if (!seat->udev_monitor)
-		return;
-
-	udev_monitor_unref(seat->udev_monitor);
-	seat->udev_monitor = NULL;
-	wl_event_source_remove(seat->udev_monitor_source);
-	seat->udev_monitor_source = NULL;
-}
-
-void
-evdev_input_create(struct weston_compositor *c, struct udev *udev,
-		   const char *seat_id)
-{
-	struct evdev_seat *seat;
-
-	seat = malloc(sizeof *seat);
-	if (seat == NULL)
-		return;
-
-	memset(seat, 0, sizeof *seat);
-	weston_seat_init(&seat->base, c);
-	seat->base.led_update = evdev_led_update;
-
-	wl_list_init(&seat->devices_list);
-	seat->seat_id = strdup(seat_id);
-	if (!evdev_enable_udev_monitor(udev, &seat->base)) {
-		free(seat->seat_id);
-		free(seat);
-		return;
-	}
-
-	evdev_add_devices(udev, &seat->base);
-
-	c->seat = &seat->base;
-}
-
-void
-evdev_remove_devices(struct weston_seat *seat_base)
-{
-	struct evdev_seat *seat = (struct evdev_seat *) seat_base;
-	struct evdev_input_device *device, *next;
-
-	wl_list_for_each_safe(device, next, &seat->devices_list, link)
-		device_removed(device);
-
-	notify_keyboard_focus_out(&seat->base.seat);
-}
-
-void
-evdev_input_destroy(struct weston_seat *seat_base)
-{
-	struct evdev_seat *seat = (struct evdev_seat *) seat_base;
-
-	evdev_remove_devices(seat_base);
-	evdev_disable_udev_monitor(&seat->base);
-
-	weston_seat_release(seat_base);
-	free(seat->seat_id);
-	free(seat);
 }

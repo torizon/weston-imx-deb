@@ -25,6 +25,7 @@
 #include <config.h>
 #endif
 
+#include <assert.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,12 +50,27 @@
 
 #include "compositor.h"
 #include "../shared/config-parser.h"
-#include "log.h"
+#include "../shared/cairo-util.h"
+
+#define DEFAULT_AXIS_STEP_DISTANCE wl_fixed_from_int(10)
+
+static char *output_name;
+static char *output_mode;
+static char *output_transform;
+static int option_width;
+static int option_height;
+static int option_count;
+static struct wl_list configured_output_list;
+
+struct x11_configured_output {
+	char *name;
+	int width, height;
+	uint32_t transform;
+	struct wl_list link;
+};
 
 struct x11_compositor {
 	struct weston_compositor	 base;
-
-	EGLSurface		 dummy_pbuffer;
 
 	Display			*dpy;
 	xcb_connection_t	*conn;
@@ -65,6 +81,11 @@ struct x11_compositor {
 	struct xkb_keymap	*xkb_keymap;
 	unsigned int		 has_xkb;
 	uint8_t			 xkb_event_base;
+
+	/* We could map multi-pointer X to multiple wayland seats, but
+	 * for now we only support core X input. */
+	struct weston_seat	 core_seat;
+
 	struct {
 		xcb_atom_t		 wm_protocols;
 		xcb_atom_t		 wm_normal_hints;
@@ -86,13 +107,8 @@ struct x11_output {
 	struct weston_output	base;
 
 	xcb_window_t		window;
-	EGLSurface		egl_surface;
 	struct weston_mode	mode;
 	struct wl_event_source *finish_frame_timer;
-};
-
-struct x11_input {
-	struct weston_seat base;
 };
 
 static struct xkb_keymap *
@@ -100,7 +116,6 @@ x11_compositor_get_keymap(struct x11_compositor *c)
 {
 	xcb_get_property_cookie_t cookie;
 	xcb_get_property_reply_t *reply;
-	xcb_generic_error_t *error;
 	struct xkb_rule_names names;
 	struct xkb_keymap *ret;
 	const char *value_all, *value_part;
@@ -110,7 +125,7 @@ x11_compositor_get_keymap(struct x11_compositor *c)
 
 	cookie = xcb_get_property(c->conn, 0, c->screen->root,
 				  c->atom.xkb_names, c->atom.string, 0, 1024);
-	reply = xcb_get_property_reply(c->conn, cookie, &error);
+	reply = xcb_get_property_reply(c->conn, cookie, NULL);
 	if (reply == NULL)
 		return NULL;
 
@@ -138,6 +153,32 @@ x11_compositor_get_keymap(struct x11_compositor *c)
 	return ret;
 }
 
+static uint32_t
+get_xkb_mod_mask(struct x11_compositor *c, uint32_t in)
+{
+	struct weston_xkb_info *info = &c->core_seat.xkb_info;
+	uint32_t ret = 0;
+
+	if ((in & ShiftMask) && info->shift_mod != XKB_MOD_INVALID)
+		ret |= (1 << info->shift_mod);
+	if ((in & LockMask) && info->caps_mod != XKB_MOD_INVALID)
+		ret |= (1 << info->caps_mod);
+	if ((in & ControlMask) && info->ctrl_mod != XKB_MOD_INVALID)
+		ret |= (1 << info->ctrl_mod);
+	if ((in & Mod1Mask) && info->alt_mod != XKB_MOD_INVALID)
+		ret |= (1 << info->alt_mod);
+	if ((in & Mod2Mask) && info->mod2_mod != XKB_MOD_INVALID)
+		ret |= (1 << info->mod2_mod);
+	if ((in & Mod3Mask) && info->mod3_mod != XKB_MOD_INVALID)
+		ret |= (1 << info->mod3_mod);
+	if ((in & Mod4Mask) && info->super_mod != XKB_MOD_INVALID)
+		ret |= (1 << info->super_mod);
+	if ((in & Mod5Mask) && info->mod5_mod != XKB_MOD_INVALID)
+		ret |= (1 << info->mod5_mod);
+
+	return ret;
+}
+
 static void
 x11_compositor_setup_xkb(struct x11_compositor *c)
 {
@@ -150,8 +191,12 @@ x11_compositor_setup_xkb(struct x11_compositor *c)
 	const xcb_query_extension_reply_t *ext;
 	xcb_generic_error_t *error;
 	xcb_void_cookie_t select;
+	xcb_xkb_use_extension_cookie_t use_ext;
+	xcb_xkb_use_extension_reply_t *use_ext_reply;
 	xcb_xkb_per_client_flags_cookie_t pcf;
 	xcb_xkb_per_client_flags_reply_t *pcf_reply;
+	xcb_xkb_get_state_cookie_t state;
+	xcb_xkb_get_state_reply_t *state_reply;
 
 	c->has_xkb = 0;
 	c->xkb_event_base = 0;
@@ -163,19 +208,39 @@ x11_compositor_setup_xkb(struct x11_compositor *c)
 	}
 	c->xkb_event_base = ext->first_event;
 
-	select = xcb_xkb_select_events(c->conn,
-				       XCB_XKB_ID_USE_CORE_KBD,
-				       XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
-				       0,
-				       XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
-				       0,
-				       0,
-				       NULL);
+	select = xcb_xkb_select_events_checked(c->conn,
+					       XCB_XKB_ID_USE_CORE_KBD,
+					       XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
+					       0,
+					       XCB_XKB_EVENT_TYPE_STATE_NOTIFY,
+					       0,
+					       0,
+					       NULL);
 	error = xcb_request_check(c->conn, select);
 	if (error) {
 		weston_log("error: failed to select for XKB state events\n");
+		free(error);
 		return;
 	}
+
+	use_ext = xcb_xkb_use_extension(c->conn,
+					XCB_XKB_MAJOR_VERSION,
+					XCB_XKB_MINOR_VERSION);
+	use_ext_reply = xcb_xkb_use_extension_reply(c->conn, use_ext, NULL);
+	if (!use_ext_reply) {
+		weston_log("couldn't start using XKB extension\n");
+		return;
+	}
+
+	if (!use_ext_reply->supported) {
+		weston_log("XKB extension version on the server is too old "
+			   "(want %d.%d, has %d.%d)\n",
+			   XCB_XKB_MAJOR_VERSION, XCB_XKB_MINOR_VERSION,
+			   use_ext_reply->serverMajor, use_ext_reply->serverMinor);
+		free(use_ext_reply);
+		return;
+	}
+	free(use_ext_reply);
 
 	pcf = xcb_xkb_per_client_flags(c->conn,
 				       XCB_XKB_ID_USE_CORE_KBD,
@@ -184,13 +249,32 @@ x11_compositor_setup_xkb(struct x11_compositor *c)
 				       0,
 				       0,
 				       0);
-	pcf_reply = xcb_xkb_per_client_flags_reply(c->conn, pcf, &error);
-	free(pcf_reply);
-	if (error) {
+	pcf_reply = xcb_xkb_per_client_flags_reply(c->conn, pcf, NULL);
+	if (!pcf_reply ||
+	    !(pcf_reply->value & XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT)) {
 		weston_log("failed to set XKB per-client flags, not using "
 			   "detectable repeat\n");
+		free(pcf_reply);
 		return;
 	}
+	free(pcf_reply);
+
+	state = xcb_xkb_get_state(c->conn, XCB_XKB_ID_USE_CORE_KBD);
+	state_reply = xcb_xkb_get_state_reply(c->conn, state, NULL);
+	if (!state_reply) {
+		weston_log("failed to get initial XKB state\n");
+		return;
+	}
+
+	xkb_state_update_mask(c->core_seat.xkb_state.state,
+			      get_xkb_mod_mask(c, state_reply->baseMods),
+			      get_xkb_mod_mask(c, state_reply->latchedMods),
+			      get_xkb_mod_mask(c, state_reply->lockedMods),
+			      0,
+			      0,
+			      state_reply->group);
+
+	free(state_reply);
 
 	c->has_xkb = 1;
 #endif
@@ -199,28 +283,21 @@ x11_compositor_setup_xkb(struct x11_compositor *c)
 static int
 x11_input_create(struct x11_compositor *c, int no_input)
 {
-	struct x11_input *input;
 	struct xkb_keymap *keymap;
 
-	input = malloc(sizeof *input);
-	if (input == NULL)
-		return -1;
-
-	memset(input, 0, sizeof *input);
-	weston_seat_init(&input->base, &c->base);
-	c->base.seat = &input->base;
+	weston_seat_init(&c->core_seat, &c->base);
 
 	if (no_input)
 		return 0;
 
-	weston_seat_init_pointer(&input->base);
-
-	x11_compositor_setup_xkb(c);
+	weston_seat_init_pointer(&c->core_seat);
 
 	keymap = x11_compositor_get_keymap(c);
-	weston_seat_init_keyboard(&input->base, keymap);
+	weston_seat_init_keyboard(&c->core_seat, keymap);
 	if (keymap)
 		xkb_map_unref(keymap);
+
+	x11_compositor_setup_xkb(c);
 
 	return 0;
 }
@@ -228,12 +305,7 @@ x11_input_create(struct x11_compositor *c, int no_input)
 static void
 x11_input_destroy(struct x11_compositor *compositor)
 {
-	struct x11_input *input = container_of(compositor->base.seat,
-					       struct x11_input,
-					       base);
-
-	weston_seat_release(&input->base);
-	free(input);
+	weston_seat_release(&compositor->core_seat);
 }
 
 static int
@@ -249,16 +321,6 @@ x11_compositor_init_egl(struct x11_compositor *c)
 		EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
 		EGL_NONE
 	};
-	static const EGLint context_attribs[] = {
-		EGL_CONTEXT_CLIENT_VERSION, 2,
-		EGL_NONE
-	};
-
-	static const EGLint pbuffer_attribs[] = {
-		EGL_WIDTH, 10,
-		EGL_HEIGHT, 10,
-		EGL_NONE
-	};
 
 	c->base.egl_display = eglGetDisplay(c->dpy);
 	if (c->base.egl_display == NULL) {
@@ -271,35 +333,9 @@ x11_compositor_init_egl(struct x11_compositor *c)
 		return -1;
 	}
 
-	if (!eglBindAPI(EGL_OPENGL_ES_API)) {
-		weston_log("failed to bind EGL_OPENGL_ES_API\n");
-		return -1;
-	}
 	if (!eglChooseConfig(c->base.egl_display, config_attribs,
 			     &c->base.egl_config, 1, &n) || n == 0) {
 		weston_log("failed to choose config: %d\n", n);
-		return -1;
-	}
-
-	c->base.egl_context =
-		eglCreateContext(c->base.egl_display, c->base.egl_config,
-				 EGL_NO_CONTEXT, context_attribs);
-	if (c->base.egl_context == NULL) {
-		weston_log("failed to create context\n");
-		return -1;
-	}
-
-	c->dummy_pbuffer = eglCreatePbufferSurface(c->base.egl_display,
-						   c->base.egl_config,
-						   pbuffer_attribs);
-	if (c->dummy_pbuffer == NULL) {
-		weston_log("failed to create dummy pbuffer\n");
-		return -1;
-	}
-
-	if (!eglMakeCurrent(c->base.egl_display, c->dummy_pbuffer,
-			    c->dummy_pbuffer, c->base.egl_context)) {
-		weston_log("failed to make context current\n");
 		return -1;
 	}
 
@@ -309,6 +345,8 @@ x11_compositor_init_egl(struct x11_compositor *c)
 static void
 x11_compositor_fini_egl(struct x11_compositor *compositor)
 {
+	gles2_renderer_destroy(&compositor->base);
+
 	eglMakeCurrent(compositor->base.egl_display,
 		       EGL_NO_SURFACE, EGL_NO_SURFACE,
 		       EGL_NO_CONTEXT);
@@ -322,23 +360,12 @@ x11_output_repaint(struct weston_output *output_base,
 		   pixman_region32_t *damage)
 {
 	struct x11_output *output = (struct x11_output *)output_base;
-	struct x11_compositor *compositor =
-		(struct x11_compositor *)output->base.compositor;
-	struct weston_surface *surface;
+	struct weston_compositor *ec = output->base.compositor;
 
-	if (!eglMakeCurrent(compositor->base.egl_display, output->egl_surface,
-			    output->egl_surface,
-			    compositor->base.egl_context)) {
-		weston_log("failed to make current\n");
-		return;
-	}
+	ec->renderer->repaint_output(output_base, damage);
 
-	wl_list_for_each_reverse(surface, &compositor->base.surface_list, link)
-		weston_surface_draw(surface, &output->base, damage);
-
-	wl_signal_emit(&output->base.frame_signal, output);
-
-	eglSwapBuffers(compositor->base.egl_display, output->egl_surface);
+	pixman_region32_subtract(&ec->primary_plane.damage,
+				 &ec->primary_plane.damage, damage);
 
 	wl_event_source_timer_update(output->finish_frame_timer, 10);
 }
@@ -367,7 +394,8 @@ x11_output_destroy(struct weston_output *output_base)
 	wl_list_remove(&output->base.link);
 	wl_event_source_remove(output->finish_frame_timer);
 
-	eglDestroySurface(compositor->base.egl_display, output->egl_surface);
+	eglDestroySurface(compositor->base.egl_display,
+			  output->base.egl_surface);
 
 	xcb_destroy_window(compositor->conn, output->window);
 
@@ -470,13 +498,15 @@ x11_output_set_icon(struct x11_compositor *c,
 	pixman_image_unref(image);
 }
 
-static int
+static struct x11_output *
 x11_compositor_create_output(struct x11_compositor *c, int x, int y,
 			     int width, int height, int fullscreen,
-			     int no_input)
+			     int no_input, char *configured_name,
+			     uint32_t transform)
 {
 	static const char name[] = "Weston Compositor";
 	static const char class[] = "weston-1\0Weston Compositor";
+	char title[32];
 	struct x11_output *output;
 	xcb_screen_iterator_t iter;
 	struct wm_normal_hints normal_hints;
@@ -487,6 +517,11 @@ x11_compositor_create_output(struct x11_compositor *c, int x, int y,
 		XCB_EVENT_MASK_STRUCTURE_NOTIFY,
 		0
 	};
+
+	if (configured_name)
+		sprintf(title, "%s - %s", name, configured_name);
+	else
+		strcpy(title, name);
 
 	if (!no_input)
 		values[0] |=
@@ -502,7 +537,7 @@ x11_compositor_create_output(struct x11_compositor *c, int x, int y,
 
 	output = malloc(sizeof *output);
 	if (output == NULL)
-		return -1;
+		return NULL;
 
 	memset(output, 0, sizeof *output);
 
@@ -517,8 +552,8 @@ x11_compositor_create_output(struct x11_compositor *c, int x, int y,
 	output->base.current = &output->mode;
 	output->base.make = "xwayland";
 	output->base.model = "none";
-	weston_output_init(&output->base, &c->base, x, y, width, height,
-			 WL_OUTPUT_FLIPPED);
+	weston_output_init(&output->base, &c->base,
+			   x, y, width, height, transform);
 
 	values[1] = c->null_cursor;
 	output->window = xcb_generate_id(c->conn);
@@ -551,7 +586,7 @@ x11_compositor_create_output(struct x11_compositor *c, int x, int y,
 	/* Set window name.  Don't bother with non-EWMH WMs. */
 	xcb_change_property(c->conn, XCB_PROP_MODE_REPLACE, output->window,
 			    c->atom.net_wm_name, c->atom.utf8_string, 8,
-			    strlen(name), name);
+			    strlen(title), title);
 	xcb_change_property(c->conn, XCB_PROP_MODE_REPLACE, output->window,
 			    c->atom.wm_class, c->atom.string, 8,
 			    sizeof class, class);
@@ -566,17 +601,12 @@ x11_compositor_create_output(struct x11_compositor *c, int x, int y,
 		x11_output_change_state(output, 1,
 					c->atom.net_wm_state_fullscreen);
 
-	output->egl_surface = 
+	output->base.egl_surface = 
 		eglCreateWindowSurface(c->base.egl_display, c->base.egl_config,
 				       output->window, NULL);
-	if (!output->egl_surface) {
+	if (!output->base.egl_surface) {
 		weston_log("failed to create window surface\n");
-		return -1;
-	}
-	if (!eglMakeCurrent(c->base.egl_display, output->egl_surface,
-			    output->egl_surface, c->base.egl_context)) {
-		weston_log("failed to make surface current\n");
-		return -1;
+		return NULL;
 	}
 
 	loop = wl_display_get_event_loop(c->base.wl_display);
@@ -596,7 +626,7 @@ x11_compositor_create_output(struct x11_compositor *c, int x, int y,
 	weston_log("x11 output %dx%d, window id %d\n",
 		   width, height, output->window);
 
-	return 0;
+	return output;
 }
 
 static struct x11_output *
@@ -612,40 +642,11 @@ x11_compositor_find_output(struct x11_compositor *c, xcb_window_t window)
 	return NULL;
 }
 
-static uint32_t
-get_xkb_mod_mask(struct x11_compositor *c, uint32_t in)
-{
-	struct weston_xkb_info *info = &c->base.seat->xkb_info;
-	uint32_t ret = 0;
-
-	if ((in & ShiftMask) && info->shift_mod != XKB_MOD_INVALID)
-		ret |= (1 << info->shift_mod);
-	if ((in & LockMask) && info->caps_mod != XKB_MOD_INVALID)
-		ret |= (1 << info->caps_mod);
-	if ((in & ControlMask) && info->ctrl_mod != XKB_MOD_INVALID)
-		ret |= (1 << info->ctrl_mod);
-	if ((in & Mod1Mask) && info->alt_mod != XKB_MOD_INVALID)
-		ret |= (1 << info->alt_mod);
-	if ((in & Mod2Mask) && info->mod2_mod != XKB_MOD_INVALID)
-		ret |= (1 << info->mod2_mod);
-	if ((in & Mod3Mask) && info->mod3_mod != XKB_MOD_INVALID)
-		ret |= (1 << info->mod3_mod);
-	if ((in & Mod4Mask) && info->super_mod != XKB_MOD_INVALID)
-		ret |= (1 << info->super_mod);
-	if ((in & Mod5Mask) && info->mod5_mod != XKB_MOD_INVALID)
-		ret |= (1 << info->mod5_mod);
-
-	return ret;
-}
-
 #ifdef HAVE_XCB_XKB
 static void
 update_xkb_state(struct x11_compositor *c, xcb_xkb_state_notify_event_t *state)
 {
-	struct weston_compositor *ec = &c->base;
-	struct wl_seat *seat = &ec->seat->seat;
-
-	xkb_state_update_mask(c->base.seat->xkb_state.state,
+	xkb_state_update_mask(c->core_seat.xkb_state.state,
 			      get_xkb_mod_mask(c, state->baseMods),
 			      get_xkb_mod_mask(c, state->latchedMods),
 			      get_xkb_mod_mask(c, state->lockedMods),
@@ -653,7 +654,8 @@ update_xkb_state(struct x11_compositor *c, xcb_xkb_state_notify_event_t *state)
 			      0,
 			      state->group);
 
-	notify_modifiers(seat, wl_display_next_serial(c->base.wl_display));
+	notify_modifiers(&c->core_seat,
+			 wl_display_next_serial(c->base.wl_display));
 }
 #endif
 
@@ -672,16 +674,16 @@ static void
 update_xkb_state_from_core(struct x11_compositor *c, uint16_t x11_mask)
 {
 	uint32_t mask = get_xkb_mod_mask(c, x11_mask);
-	struct wl_keyboard *keyboard = &c->base.seat->keyboard;
+	struct wl_keyboard *keyboard = &c->core_seat.keyboard;
 
-	xkb_state_update_mask(c->base.seat->xkb_state.state,
+	xkb_state_update_mask(c->core_seat.xkb_state.state,
 			      keyboard->modifiers.mods_depressed & mask,
 			      keyboard->modifiers.mods_latched & mask,
 			      keyboard->modifiers.mods_locked & mask,
 			      0,
 			      0,
 			      (x11_mask >> 13) & 3);
-	notify_modifiers(&c->base.seat->seat,
+	notify_modifiers(&c->core_seat,
 			 wl_display_next_serial(c->base.wl_display));
 }
 
@@ -692,6 +694,23 @@ x11_compositor_deliver_button_event(struct x11_compositor *c,
 	xcb_button_press_event_t *button_event =
 		(xcb_button_press_event_t *) event;
 	uint32_t button;
+	struct x11_output *output;
+
+	output = x11_compositor_find_output(c, button_event->event);
+
+	if (state)
+		xcb_grab_pointer(c->conn, 0, output->window,
+				 XCB_EVENT_MASK_BUTTON_PRESS |
+				 XCB_EVENT_MASK_BUTTON_RELEASE |
+				 XCB_EVENT_MASK_POINTER_MOTION |
+				 XCB_EVENT_MASK_ENTER_WINDOW |
+				 XCB_EVENT_MASK_LEAVE_WINDOW,
+				 XCB_GRAB_MODE_ASYNC,
+				 XCB_GRAB_MODE_ASYNC,
+				 output->window, XCB_CURSOR_NONE,
+				 button_event->time);
+	else
+		xcb_ungrab_pointer(c->conn, button_event->time);
 
 	if (!c->has_xkb)
 		update_xkb_state_from_core(c, button_event->state);
@@ -707,39 +726,133 @@ x11_compositor_deliver_button_event(struct x11_compositor *c,
 		button = BTN_RIGHT;
 		break;
 	case 4:
+		/* Axis are measured in pixels, but the xcb events are discrete
+		 * steps. Therefore move the axis by some pixels every step. */
 		if (state)
-			notify_axis(&c->base.seat->seat,
-				      weston_compositor_get_time(),
-				      WL_POINTER_AXIS_VERTICAL_SCROLL,
-				      wl_fixed_from_int(1));
+			notify_axis(&c->core_seat,
+				    weston_compositor_get_time(),
+				    WL_POINTER_AXIS_VERTICAL_SCROLL,
+				    -DEFAULT_AXIS_STEP_DISTANCE);
 		return;
 	case 5:
 		if (state)
-			notify_axis(&c->base.seat->seat,
-				      weston_compositor_get_time(),
-				      WL_POINTER_AXIS_VERTICAL_SCROLL,
-				      wl_fixed_from_int(-1));
+			notify_axis(&c->core_seat,
+				    weston_compositor_get_time(),
+				    WL_POINTER_AXIS_VERTICAL_SCROLL,
+				    DEFAULT_AXIS_STEP_DISTANCE);
 		return;
 	case 6:
 		if (state)
-			notify_axis(&c->base.seat->seat,
-				      weston_compositor_get_time(),
-				      WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-				      wl_fixed_from_int(1));
+			notify_axis(&c->core_seat,
+				    weston_compositor_get_time(),
+				    WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+				    -DEFAULT_AXIS_STEP_DISTANCE);
 		return;
 	case 7:
 		if (state)
-			notify_axis(&c->base.seat->seat,
-				      weston_compositor_get_time(),
-				      WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-				      wl_fixed_from_int(-1));
+			notify_axis(&c->core_seat,
+				    weston_compositor_get_time(),
+				    WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+				    DEFAULT_AXIS_STEP_DISTANCE);
 		return;
 	}
 
-	notify_button(&c->base.seat->seat,
+	notify_button(&c->core_seat,
 		      weston_compositor_get_time(), button,
 		      state ? WL_POINTER_BUTTON_STATE_PRESSED :
 			      WL_POINTER_BUTTON_STATE_RELEASED);
+}
+
+static void
+x11_output_transform_coordinate(struct x11_output *x11_output,
+						wl_fixed_t *x, wl_fixed_t *y)
+{
+	struct weston_output *output = &x11_output->base;
+	wl_fixed_t tx, ty;
+	wl_fixed_t width = wl_fixed_from_int(output->width - 1);
+	wl_fixed_t height = wl_fixed_from_int(output->height - 1);
+
+	switch(output->transform) {
+	case WL_OUTPUT_TRANSFORM_NORMAL:
+	default:
+		tx = *x;
+		ty = *y;
+		break;
+	case WL_OUTPUT_TRANSFORM_90:
+		tx = *y;
+		ty = height - *x;
+		break;
+	case WL_OUTPUT_TRANSFORM_180:
+		tx = width - *x;
+		ty = height - *y;
+		break;
+	case WL_OUTPUT_TRANSFORM_270:
+		tx = width - *y;
+		ty = *x;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED:
+		tx = width - *x;
+		ty = *y;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+		tx = width - *y;
+		ty = height - *x;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+		tx = *x;
+		ty = height - *y;
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+		tx = *y;
+		ty = *x;
+		break;
+	}
+
+	tx += wl_fixed_from_int(output->x);
+	ty += wl_fixed_from_int(output->y);
+
+	*x = tx;
+	*y = ty;
+}
+
+static void
+x11_compositor_deliver_motion_event(struct x11_compositor *c,
+					xcb_generic_event_t *event)
+{
+	struct x11_output *output;
+	wl_fixed_t x, y;
+	xcb_motion_notify_event_t *motion_notify =
+			(xcb_motion_notify_event_t *) event;
+
+	if (!c->has_xkb)
+		update_xkb_state_from_core(c, motion_notify->state);
+	output = x11_compositor_find_output(c, motion_notify->event);
+	x = wl_fixed_from_int(motion_notify->event_x);
+	y = wl_fixed_from_int(motion_notify->event_y);
+	x11_output_transform_coordinate(output, &x, &y);
+
+	notify_motion(&c->core_seat, weston_compositor_get_time(), x, y);
+}
+
+static void
+x11_compositor_deliver_enter_event(struct x11_compositor *c,
+					xcb_generic_event_t *event)
+{
+	struct x11_output *output;
+	wl_fixed_t x, y;
+
+	xcb_enter_notify_event_t *enter_notify =
+			(xcb_enter_notify_event_t *) event;
+	if (enter_notify->state >= Button1Mask)
+		return;
+	if (!c->has_xkb)
+		update_xkb_state_from_core(c, enter_notify->state);
+	output = x11_compositor_find_output(c, enter_notify->event);
+	x = wl_fixed_from_int(enter_notify->event_x);
+	y = wl_fixed_from_int(enter_notify->event_y);
+	x11_output_transform_coordinate(output, &x, &y);
+
+	notify_pointer_focus(&c->core_seat, &output->base, x, y);
 }
 
 static int
@@ -766,7 +879,6 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 	struct x11_output *output;
 	xcb_generic_event_t *event, *prev;
 	xcb_client_message_event_t *client_message;
-	xcb_motion_notify_event_t *motion_notify;
 	xcb_enter_notify_event_t *enter_notify;
 	xcb_key_press_event_t *key_press, *key_release;
 	xcb_keymap_notify_event_t *keymap_notify;
@@ -775,19 +887,21 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 	xcb_atom_t atom;
 	uint32_t *k;
 	uint32_t i, set;
-	wl_fixed_t x, y;
+	uint8_t response_type;
 	int count;
 
 	prev = NULL;
 	count = 0;
 	while (x11_compositor_next_event(c, &event, mask)) {
+		response_type = event->response_type & ~0x80;
+
 		switch (prev ? prev->response_type & ~0x80 : 0x80) {
 		case XCB_KEY_RELEASE:
 			/* Suppress key repeat events; this is only used if we
 			 * don't have XCB XKB support. */
 			key_release = (xcb_key_press_event_t *) prev;
 			key_press = (xcb_key_press_event_t *) event;
-			if ((event->response_type & ~0x80) == XCB_KEY_PRESS &&
+			if (response_type == XCB_KEY_PRESS &&
 			    key_release->time == key_press->time &&
 			    key_release->detail == key_press->detail) {
 				/* Don't deliver the held key release
@@ -801,7 +915,7 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 				 * and fall through and handle the new
 				 * event below. */
 				update_xkb_state_from_core(c, key_release->state);
-				notify_key(&c->base.seat->seat,
+				notify_key(&c->core_seat,
 					   weston_compositor_get_time(),
 					   key_release->detail - 8,
 					   WL_KEYBOARD_KEY_STATE_RELEASED,
@@ -812,8 +926,7 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 			}
 
 		case XCB_FOCUS_IN:
-			/* assert event is keymap_notify */
-			focus_in = (xcb_focus_in_event_t *) prev;
+			assert(response_type == XCB_KEYMAP_NOTIFY);
 			keymap_notify = (xcb_keymap_notify_event_t *) event;
 			c->keys.size = 0;
 			for (i = 0; i < ARRAY_LENGTH(keymap_notify->keys) * 8; i++) {
@@ -825,12 +938,11 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 				}
 			}
 
-			output = x11_compositor_find_output(c, focus_in->event);
 			/* Unfortunately the state only comes with the enter
 			 * event, rather than with the focus event.  I'm not
 			 * sure of the exact semantics around it and whether
 			 * we can ensure that we get both? */
-			notify_keyboard_focus_in(&c->base.seat->seat, &c->keys,
+			notify_keyboard_focus_in(&c->core_seat, &c->keys,
 						 STATE_UPDATE_AUTOMATIC);
 
 			free(prev);
@@ -842,12 +954,12 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 			break;
 		}
 
-		switch (event->response_type & ~0x80) {
+		switch (response_type) {
 		case XCB_KEY_PRESS:
 			key_press = (xcb_key_press_event_t *) event;
 			if (!c->has_xkb)
 				update_xkb_state_from_core(c, key_press->state);
-			notify_key(&c->base.seat->seat,
+			notify_key(&c->core_seat,
 				   weston_compositor_get_time(),
 				   key_press->detail - 8,
 				   WL_KEYBOARD_KEY_STATE_PRESSED,
@@ -862,7 +974,7 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 				break;
 			}
 			key_release = (xcb_key_press_event_t *) event;
-			notify_key(&c->base.seat->seat,
+			notify_key(&c->core_seat,
 				   weston_compositor_get_time(),
 				   key_release->detail - 8,
 				   WL_KEYBOARD_KEY_STATE_RELEASED,
@@ -875,14 +987,7 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 			x11_compositor_deliver_button_event(c, event, 0);
 			break;
 		case XCB_MOTION_NOTIFY:
-			motion_notify = (xcb_motion_notify_event_t *) event;
-			if (!c->has_xkb)
-				update_xkb_state_from_core(c, motion_notify->state);
-			output = x11_compositor_find_output(c, motion_notify->event);
-			x = wl_fixed_from_int(output->base.x + motion_notify->event_x);
-			y = wl_fixed_from_int(output->base.y + motion_notify->event_y);
-			notify_motion(&c->base.seat->seat,
-				      weston_compositor_get_time(), x, y);
+			x11_compositor_deliver_motion_event(c, event);
 			break;
 
 		case XCB_EXPOSE:
@@ -892,17 +997,7 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 			break;
 
 		case XCB_ENTER_NOTIFY:
-			enter_notify = (xcb_enter_notify_event_t *) event;
-			if (enter_notify->state >= Button1Mask)
-				break;
-			if (!c->has_xkb)
-				update_xkb_state_from_core(c, enter_notify->state);
-			output = x11_compositor_find_output(c, enter_notify->event);
-			x = wl_fixed_from_int(output->base.x + enter_notify->event_x);
-			y = wl_fixed_from_int(output->base.y + enter_notify->event_y);
-
-			notify_pointer_focus(&c->base.seat->seat,
-					     &output->base, x, y);
+			x11_compositor_deliver_enter_event(c, event);
 			break;
 
 		case XCB_LEAVE_NOTIFY:
@@ -911,8 +1006,7 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 				break;
 			if (!c->has_xkb)
 				update_xkb_state_from_core(c, enter_notify->state);
-			output = x11_compositor_find_output(c, enter_notify->event);
-			notify_pointer_focus(&c->base.seat->seat, NULL, 0, 0);
+			notify_pointer_focus(&c->core_seat, NULL, 0, 0);
 			break;
 
 		case XCB_CLIENT_MESSAGE:
@@ -935,7 +1029,7 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 			if (focus_in->mode == XCB_NOTIFY_MODE_WHILE_GRABBED ||
 			    focus_in->mode == XCB_NOTIFY_MODE_UNGRAB)
 				break;
-			notify_keyboard_focus_out(&c->base.seat->seat);
+			notify_keyboard_focus_out(&c->core_seat);
 			break;
 
 		default:
@@ -944,7 +1038,7 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 
 #ifdef HAVE_XCB_XKB
 		if (c->has_xkb &&
-		    (event->response_type & ~0x80) == c->xkb_event_base) {
+		    response_type == c->xkb_event_base) {
 			xcb_xkb_state_notify_event_t *state =
 				(xcb_xkb_state_notify_event_t *) event;
 			if (state->xkbType == XCB_XKB_STATE_NOTIFY)
@@ -961,7 +1055,7 @@ x11_compositor_handle_event(int fd, uint32_t mask, void *data)
 	case XCB_KEY_RELEASE:
 		key_release = (xcb_key_press_event_t *) prev;
 		update_xkb_state_from_core(c, key_release->state);
-		notify_key(&c->base.seat->seat,
+		notify_key(&c->core_seat,
 			   weston_compositor_get_time(),
 			   key_release->detail - 8,
 			   WL_KEYBOARD_KEY_STATE_RELEASED,
@@ -1029,9 +1123,25 @@ x11_compositor_get_resources(struct x11_compositor *c)
 }
 
 static void
+x11_restore(struct weston_compositor *ec)
+{
+}
+
+static void
+x11_free_configured_output(struct x11_configured_output *output)
+{
+	free(output->name);
+	free(output);
+}
+
+static void
 x11_destroy(struct weston_compositor *ec)
 {
 	struct x11_compositor *compositor = (struct x11_compositor *)ec;
+	struct x11_configured_output *o, *n;
+
+	wl_list_for_each_safe(o, n, &configured_output_list, link)
+		x11_free_configured_output(o);
 
 	wl_event_source_remove(compositor->xcb_source);
 	x11_input_destroy(compositor);
@@ -1046,13 +1156,16 @@ x11_destroy(struct weston_compositor *ec)
 
 static struct weston_compositor *
 x11_compositor_create(struct wl_display *display,
-		      int width, int height, int count, int fullscreen,
+		      int fullscreen,
 		      int no_input,
 		      int argc, char *argv[], const char *config_file)
 {
 	struct x11_compositor *c;
+	struct x11_configured_output *o;
+	struct x11_output *output;
 	xcb_screen_iterator_t s;
-	int i, x;
+	int i, x = 0, output_count = 0;
+	int width, height, count;
 
 	weston_log("initializing x11 backend\n");
 
@@ -1087,19 +1200,44 @@ x11_compositor_create(struct wl_display *display,
 		goto err_xdisplay;
 
 	c->base.destroy = x11_destroy;
-
-	if (weston_compositor_init_gl(&c->base) < 0)
-		goto err_egl;
+	c->base.restore = x11_restore;
 
 	if (x11_input_create(c, no_input) < 0)
 		goto err_egl;
 
-	for (i = 0, x = 0; i < count; i++) {
-		if (x11_compositor_create_output(c, x, 0, width, height,
-						 fullscreen, no_input) < 0)
+	width = option_width ? option_width : 1024;
+	height = option_height ? option_height : 640;
+	count = option_count ? option_count : 1;
+
+	wl_list_for_each(o, &configured_output_list, link) {
+		output = x11_compositor_create_output(c, x, 0,
+						      option_width ? width :
+						      o->width,
+						      option_height ? height :
+						      o->height,
+						      fullscreen, no_input,
+						      o->name, o->transform);
+		if (output == NULL)
 			goto err_x11_input;
-		x += width;
+
+		x = pixman_region32_extents(&output->base.region)->x2;
+
+		output_count++;
+		if (option_count && output_count >= option_count)
+			break;
 	}
+
+	for (i = output_count; i < count; i++) {
+		output = x11_compositor_create_output(c, x, 0, width, height,
+						      fullscreen, no_input, NULL,
+						      WL_OUTPUT_TRANSFORM_NORMAL);
+		if (output == NULL)
+			goto err_x11_input;
+		x = pixman_region32_extents(&output->base.region)->x2;
+	}
+
+	if (gles2_renderer_init(&c->base) < 0)
+		goto err_egl;
 
 	c->xcb_source =
 		wl_event_loop_add_fd(c->base.input_loop,
@@ -1121,25 +1259,116 @@ err_free:
 	return NULL;
 }
 
+static void
+x11_output_set_transform(struct x11_configured_output *output)
+{
+	if (!output_transform) {
+		output->transform = WL_OUTPUT_TRANSFORM_NORMAL;
+		return;
+	}
+
+	if (!strcmp(output_transform, "normal"))
+		output->transform = WL_OUTPUT_TRANSFORM_NORMAL;
+	else if (!strcmp(output_transform, "90"))
+		output->transform = WL_OUTPUT_TRANSFORM_90;
+	else if (!strcmp(output_transform, "180"))
+		output->transform = WL_OUTPUT_TRANSFORM_180;
+	else if (!strcmp(output_transform, "270"))
+		output->transform = WL_OUTPUT_TRANSFORM_270;
+	else if (!strcmp(output_transform, "flipped"))
+		output->transform = WL_OUTPUT_TRANSFORM_FLIPPED;
+	else if (!strcmp(output_transform, "flipped-90"))
+		output->transform = WL_OUTPUT_TRANSFORM_FLIPPED_90;
+	else if (!strcmp(output_transform, "flipped-180"))
+		output->transform = WL_OUTPUT_TRANSFORM_FLIPPED_180;
+	else if (!strcmp(output_transform, "flipped-270"))
+		output->transform = WL_OUTPUT_TRANSFORM_FLIPPED_270;
+	else {
+		weston_log("Invalid transform \"%s\" for output %s\n",
+						output_transform, output_name);
+		output->transform = WL_OUTPUT_TRANSFORM_NORMAL;
+	}
+}
+
+static void
+output_section_done(void *data)
+{
+	struct x11_configured_output *output;
+
+	output = malloc(sizeof *output);
+
+	if (!output || !output_name || (output_name[0] != 'X') ||
+				(!output_mode && !output_transform)) {
+		if (output_name)
+			free(output_name);
+		output_name = NULL;
+		free(output);
+		goto err_free;
+	}
+
+	output->name = output_name;
+
+	if (output_mode) {
+		if (sscanf(output_mode, "%dx%d", &output->width,
+						&output->height) != 2) {
+			weston_log("Invalid mode \"%s\" for output %s\n",
+							output_mode, output_name);
+			x11_free_configured_output(output);
+			goto err_free;
+		}
+	} else {
+		output->width = 1024;
+		output->height = 640;
+	}
+
+	x11_output_set_transform(output);
+
+	wl_list_insert(configured_output_list.prev, &output->link);
+
+err_free:
+	if (output_mode)
+		free(output_mode);
+	if (output_transform)
+		free(output_transform);
+	output_mode = NULL;
+	output_transform = NULL;
+}
+
 WL_EXPORT struct weston_compositor *
 backend_init(struct wl_display *display, int argc, char *argv[],
 	     const char *config_file)
 {
-	int width = 1024, height = 640, fullscreen = 0, count = 1;
+	int fullscreen = 0;
 	int no_input = 0;
 
 	const struct weston_option x11_options[] = {
-		{ WESTON_OPTION_INTEGER, "width", 0, &width },
-		{ WESTON_OPTION_INTEGER, "height", 0, &height },
+		{ WESTON_OPTION_INTEGER, "width", 0, &option_width },
+		{ WESTON_OPTION_INTEGER, "height", 0, &option_height },
 		{ WESTON_OPTION_BOOLEAN, "fullscreen", 0, &fullscreen },
-		{ WESTON_OPTION_INTEGER, "output-count", 0, &count },
+		{ WESTON_OPTION_INTEGER, "output-count", 0, &option_count },
 		{ WESTON_OPTION_BOOLEAN, "no-input", 0, &no_input },
 	};
 
 	parse_options(x11_options, ARRAY_LENGTH(x11_options), argc, argv);
 
+	wl_list_init(&configured_output_list);
+
+	const struct config_key x11_config_keys[] = {
+		{ "name", CONFIG_KEY_STRING, &output_name },
+		{ "mode", CONFIG_KEY_STRING, &output_mode },
+		{ "transform", CONFIG_KEY_STRING, &output_transform },
+	};
+
+	const struct config_section config_section[] = {
+		{ "output", x11_config_keys,
+		ARRAY_LENGTH(x11_config_keys), output_section_done },
+	};
+
+	parse_config_file(config_file, config_section,
+				ARRAY_LENGTH(config_section), NULL);
+
 	return x11_compositor_create(display,
-				     width, height, count, fullscreen,
+				     fullscreen,
 				     no_input,
 				     argc, argv, config_file);
 }

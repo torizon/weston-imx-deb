@@ -20,6 +20,7 @@
  * OF THIS SOFTWARE.
  */
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +48,7 @@ static char *option_shell;
 static struct wl_list terminal_list;
 
 static struct terminal *
-terminal_create(struct display *display, int fullscreen);
+terminal_create(struct display *display);
 static void
 terminal_destroy(struct terminal *terminal);
 static int
@@ -403,8 +404,6 @@ struct terminal {
 	int escape_flags;
 	struct utf8_state_machine state_machine;
 	int margin;
-	int fullscreen;
-	int focused;
 	struct color_scheme *color_scheme;
 	struct terminal_color color_table[256];
 	cairo_font_extents_t extents;
@@ -537,7 +536,7 @@ terminal_decode_attr(struct terminal *terminal, int row, int col,
 	if ((attr.a & ATTRMASK_INVERSE) ||
 	    decoded->attr.s ||
 	    ((terminal->mode & MODE_SHOW_CURSOR) &&
-	     terminal->focused && terminal->row == row &&
+	     window_has_focus(terminal->window) && terminal->row == row &&
 	     terminal->column == col)) {
 		foreground = attr.bg;
 		background = attr.fg;
@@ -764,7 +763,8 @@ resize_handler(struct widget *widget,
 	columns = (width - m) / (int32_t) terminal->extents.max_x_advance;
 	rows = (height - m) / (int32_t) terminal->extents.height;
 
-	if (!terminal->fullscreen) {
+	if (!window_is_fullscreen(terminal->window) &&
+	    !window_is_maximized(terminal->window)) {
 		width = columns * terminal->extents.max_x_advance + m;
 		height = rows * terminal->extents.height + m;
 		widget_set_size(terminal->widget, width, height);
@@ -778,7 +778,8 @@ terminal_resize(struct terminal *terminal, int columns, int rows)
 {
 	int32_t width, height, m;
 
-	if (terminal->fullscreen)
+	if (window_is_fullscreen(terminal->window) ||
+	    window_is_maximized(terminal->window))
 		return;
 
 	m = 2 * terminal->margin;
@@ -999,7 +1000,8 @@ redraw_handler(struct widget *widget, void *data)
 	attr.key = ~0;
 	glyph_run_flush(&run, attr);
 
-	if ((terminal->mode & MODE_SHOW_CURSOR) && !terminal->focused) {
+	if ((terminal->mode & MODE_SHOW_CURSOR) &&
+	    !window_has_focus(terminal->window)) {
 		d = 0.5;
 
 		cairo_set_line_width(cr, 1);
@@ -1802,6 +1804,8 @@ handle_special_char(struct terminal *terminal, char c)
 	case '\x0F': /* SI */
 		terminal->cs = terminal->g0;
 		break;
+	case '\0':
+		break;
 	default:
 		return 0;
 	}
@@ -2062,8 +2066,7 @@ fullscreen_handler(struct window *window, void *data)
 {
 	struct terminal *terminal = data;
 
-	terminal->fullscreen ^= 1;
-	window_set_fullscreen(window, terminal->fullscreen);
+	window_set_fullscreen(window, !window_is_fullscreen(terminal->window));
 }
 
 static int
@@ -2094,8 +2097,7 @@ handle_bound_key(struct terminal *terminal,
 		return 1;
 
 	case XKB_KEY_N:
-		new_terminal =
-			terminal_create(terminal->display, option_fullscreen);
+		new_terminal = terminal_create(terminal->display);
 		if (terminal_run(new_terminal, option_shell))
 			terminal_destroy(new_terminal);
 
@@ -2114,7 +2116,8 @@ key_handler(struct window *window, struct input *input, uint32_t time,
 	struct terminal *terminal = data;
 	char ch[MAX_RESPONSE];
 	uint32_t modifiers, serial;
-	int len = 0;
+	int ret, len = 0;
+	bool convert_utf8 = true;
 
 	modifiers = input_get_modifiers(input);
 	if ((modifiers & MOD_CONTROL_MASK) &&
@@ -2122,6 +2125,69 @@ key_handler(struct window *window, struct input *input, uint32_t time,
 	    state == WL_KEYBOARD_KEY_STATE_PRESSED &&
 	    handle_bound_key(terminal, input, sym, time))
 		return;
+
+	/* Map keypad symbols to 'normal' equivalents before processing */
+	switch (sym) {
+	case XKB_KEY_KP_Space:
+		sym = XKB_KEY_space;
+		break;
+	case XKB_KEY_KP_Tab:
+		sym = XKB_KEY_Tab;
+		break;
+	case XKB_KEY_KP_Enter:
+		sym = XKB_KEY_Return;
+		break;
+	case XKB_KEY_KP_Left:
+		sym = XKB_KEY_Left;
+		break;
+	case XKB_KEY_KP_Up:
+		sym = XKB_KEY_Up;
+		break;
+	case XKB_KEY_KP_Right:
+		sym = XKB_KEY_Right;
+		break;
+	case XKB_KEY_KP_Down:
+		sym = XKB_KEY_Down;
+		break;
+	case XKB_KEY_KP_Equal:
+		sym = XKB_KEY_equal;
+		break;
+	case XKB_KEY_KP_Multiply:
+		sym = XKB_KEY_asterisk;
+		break;
+	case XKB_KEY_KP_Add:
+		sym = XKB_KEY_plus;
+		break;
+	case XKB_KEY_KP_Separator:
+		/* Note this is actually locale-dependent and should mostly be
+		 * a comma.  But leave it as period until we one day start
+		 * doing the right thing. */
+		sym = XKB_KEY_period;
+		break;
+	case XKB_KEY_KP_Subtract:
+		sym = XKB_KEY_minus;
+		break;
+	case XKB_KEY_KP_Decimal:
+		sym = XKB_KEY_period;
+		break;
+	case XKB_KEY_KP_Divide:
+		sym = XKB_KEY_slash;
+		break;
+	case XKB_KEY_KP_0:
+	case XKB_KEY_KP_1:
+	case XKB_KEY_KP_2:
+	case XKB_KEY_KP_3:
+	case XKB_KEY_KP_4:
+	case XKB_KEY_KP_5:
+	case XKB_KEY_KP_6:
+	case XKB_KEY_KP_7:
+	case XKB_KEY_KP_8:
+	case XKB_KEY_KP_9:
+		sym = (sym - XKB_KEY_KP_0) + XKB_KEY_0;
+		break;
+	default:
+		break;
+	}
 
 	switch (sym) {
 	case XKB_KEY_BackSpace:
@@ -2227,15 +2293,29 @@ key_handler(struct window *window, struct input *input, uint32_t time,
 			else if (sym == '/') sym = 0x1F;
 			else if (sym == '8' || sym == '?') sym = 0x7F;
 		}
-		if ((terminal->mode & MODE_ALT_SENDS_ESC) &&
-		    (modifiers & MOD_ALT_MASK)) {
-			ch[len++] = 0x1b;
-		} else if (modifiers & MOD_ALT_MASK) {
-			sym = sym | 0x80;
+		if (modifiers & MOD_ALT_MASK) {
+			if (terminal->mode & MODE_ALT_SENDS_ESC) {
+				ch[len++] = 0x1b;
+			} else {
+				sym = sym | 0x80;
+				convert_utf8 = false;
+			}
 		}
 
-		if (sym < 256)
+		if ((sym < 128) ||
+		    (!convert_utf8 && sym < 256)) {
 			ch[len++] = sym;
+		} else {
+			ret = xkb_keysym_to_utf8(sym, ch + len,
+						 MAX_RESPONSE - len);
+			if (ret < 0)
+				fprintf(stderr,
+					"Warning: buffer too small to encode "
+					"UTF8 character\n");
+			else
+				len += ret;
+		}
+
 		break;
 	}
 
@@ -2258,13 +2338,15 @@ keyboard_focus_handler(struct window *window,
 {
 	struct terminal *terminal = data;
 
-	terminal->focused = (device != NULL);
 	window_schedule_redraw(terminal->window);
 }
 
 static int wordsep(int ch)
 {
 	const char extra[] = "-,./?%&#:_=+@~";
+
+	if (ch > 127)
+		return 1;
 
 	return ch == 0 || !(isalpha(ch) || isdigit(ch) || strchr(extra, ch));
 }
@@ -2428,7 +2510,7 @@ motion_handler(struct widget *widget,
 }
 
 static struct terminal *
-terminal_create(struct display *display, int fullscreen)
+terminal_create(struct display *display)
 {
 	struct terminal *terminal;
 	cairo_surface_t *surface;
@@ -2439,7 +2521,6 @@ terminal_create(struct display *display, int fullscreen)
 		return terminal;
 
 	memset(terminal, 0, sizeof *terminal);
-	terminal->fullscreen = fullscreen;
 	terminal->color_scheme = &DEFAULT_COLORS;
 	terminal_init(terminal);
 	terminal->margin_top = 0;
@@ -2497,13 +2578,15 @@ terminal_create(struct display *display, int fullscreen)
 static void
 terminal_destroy(struct terminal *terminal)
 {
+	display_unwatch_fd(terminal->display, terminal->master);
 	window_destroy(terminal->window);
 	close(terminal->master);
 	wl_list_remove(&terminal->link);
-	free(terminal);
 
 	if (wl_list_empty(&terminal_list))
-		exit(0);
+		display_exit(terminal->display);
+
+	free(terminal);
 }
 
 static void
@@ -2551,8 +2634,8 @@ terminal_run(struct terminal *terminal, const char *path)
 	display_watch_fd(terminal->display, terminal->master,
 			 EPOLLIN | EPOLLHUP, &terminal->io_task);
 
-	window_set_fullscreen(terminal->window, terminal->fullscreen);
-	if (!terminal->fullscreen)
+	window_set_fullscreen(terminal->window, option_fullscreen);
+	if (!window_is_fullscreen(terminal->window))
 		terminal_resize(terminal, 80, 24);
 
 	return 0;
@@ -2601,7 +2684,7 @@ int main(int argc, char *argv[])
 	}
 
 	wl_list_init(&terminal_list);
-	terminal = terminal_create(d, option_fullscreen);
+	terminal = terminal_create(d);
 	if (terminal_run(terminal, option_shell))
 		exit(EXIT_FAILURE);
 

@@ -1,10 +1,12 @@
 bin_PROGRAMS =					\
+	weston-info				\
 	$(terminal)
 
 noinst_PROGRAMS =				\
 	$(clients_programs)			\
 	$(poppler_programs)			\
-	$(simple_clients_programs)
+	$(simple_clients_programs)		\
+	$(simple_egl_clients_programs)
 
 libexec_PROGRAMS =				\
 	$(desktop_shell)			\
@@ -20,13 +22,8 @@ AM_CPPFLAGS =					\
 
 if BUILD_SIMPLE_CLIENTS
 simple_clients_programs =			\
-	simple-egl				\
 	simple-shm				\
 	simple-touch
-
-simple_egl_SOURCES = simple-egl.c
-simple_egl_CPPFLAGS = $(SIMPLE_CLIENT_CFLAGS)
-simple_egl_LDADD = $(SIMPLE_CLIENT_LIBS) -lm
 
 simple_shm_SOURCES = simple-shm.c 		\
 	../shared/os-compatibility.c		\
@@ -41,12 +38,22 @@ simple_touch_CPPFLAGS = $(SIMPLE_CLIENT_CFLAGS)
 simple_touch_LDADD = $(SIMPLE_CLIENT_LIBS)
 endif
 
+if BUILD_SIMPLE_EGL_CLIENTS
+simple_egl_clients_programs =			\
+	simple-egl
+
+simple_egl_SOURCES = simple-egl.c
+simple_egl_CPPFLAGS = $(SIMPLE_EGL_CLIENT_CFLAGS)
+simple_egl_LDADD = $(SIMPLE_EGL_CLIENT_LIBS) -lm
+endif
+
 if BUILD_CLIENTS
 terminal = weston-terminal
 
 clients_programs =				\
 	flower					\
 	image					\
+	cliptest				\
 	dnd					\
 	smoke					\
 	resizor					\
@@ -57,7 +64,11 @@ clients_programs =				\
 	$(full_gl_client_programs)
 
 desktop_shell = weston-desktop-shell
+
+if ENABLE_TABLET_SHELL
 tablet_shell = weston-tablet-shell
+endif
+
 screenshooter = weston-screenshooter
 
 noinst_LIBRARIES = libtoytoolkit.a
@@ -66,17 +77,22 @@ libtoytoolkit_a_SOURCES =			\
 	window.c				\
 	window.h				\
 	text-cursor-position-protocol.c		\
-	text-cursor-position-client-protocol.h
+	text-cursor-position-client-protocol.h	\
+	workspaces-protocol.c			\
+	workspaces-client-protocol.h
 
 toolkit_libs =						\
 	libtoytoolkit.a					\
-	../shared/libshared.la				\
+	../shared/libshared-cairo.la			\
 	$(CLIENT_LIBS) $(CAIRO_EGL_LIBS) -lrt -lm
 
 flower_SOURCES = flower.c
 flower_LDADD = $(toolkit_libs)
 
-weston_screenshooter_SOURCES = screenshot.c screenshooter-protocol.c
+weston_screenshooter_SOURCES =			\
+	screenshot.c				\
+	screenshooter-protocol.c		\
+	screenshooter-client-protocol.h
 weston_screenshooter_LDADD = $(toolkit_libs)
 
 weston_terminal_SOURCES = terminal.c
@@ -84,6 +100,10 @@ weston_terminal_LDADD = $(toolkit_libs) -lutil
 
 image_SOURCES = image.c
 image_LDADD = $(toolkit_libs)
+
+cliptest_SOURCES = cliptest.c
+cliptest_CPPFLAGS = $(AM_CPPFLAGS) $(PIXMAN_CFLAGS)
+cliptest_LDADD = $(toolkit_libs) $(PIXMAN_LIBS)
 
 dnd_SOURCES = dnd.c
 dnd_LDADD = $(toolkit_libs)
@@ -110,9 +130,15 @@ keyboard_SOURCES = 				\
 	keyboard.c				\
 	desktop-shell-client-protocol.h		\
 	desktop-shell-protocol.c		\
-	text-client-protocol.h			\
-	text-protocol.c
+	input-method-protocol.c			\
+	input-method-client-protocol.h
 keyboard_LDADD = $(toolkit_libs)
+
+weston_info_SOURCES =				\
+	weston-info.c				\
+	../shared/os-compatibility.c		\
+	../shared/os-compatibility.h
+weston_info_LDADD = $(WESTON_INFO_LIBS)
 
 weston_desktop_shell_SOURCES =			\
 	desktop-shell.c				\
@@ -133,10 +159,14 @@ BUILT_SOURCES =					\
 	text-cursor-position-protocol.c		\
 	text-protocol.c				\
 	text-client-protocol.h			\
+	input-method-protocol.c			\
+	input-method-client-protocol.h		\
 	desktop-shell-client-protocol.h		\
 	desktop-shell-protocol.c		\
 	tablet-shell-client-protocol.h		\
-	tablet-shell-protocol.c
+	tablet-shell-protocol.c			\
+	workspaces-client-protocol.h		\
+	workspaces-protocol.c
 
 CLEANFILES = $(BUILT_SOURCES)
 endif
@@ -147,6 +177,7 @@ full_gl_client_programs = gears
 gears_SOURCES = gears.c
 gears_LDADD = $(toolkit_libs)
 
+if HAVE_GLU
 screensaver = weston-screensaver
 weston_screensaver_SOURCES =			\
 	wscreensaver.c				\
@@ -157,7 +188,10 @@ weston_screensaver_SOURCES =			\
 	wscreensaver-glue.h			\
 	glmatrix.c				\
 	matrix3.xpm
-weston_screensaver_LDADD = $(toolkit_libs) -lGLU
+weston_screensaver_LDADD = $(toolkit_libs) $(GLU_LIBS)
+weston_screensaver_CFLAGS = $(GLU_CFLAGS)
+endif
+
 endif
 
 @wayland_scanner_rules@

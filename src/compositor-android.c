@@ -20,17 +20,24 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 
 #include "compositor.h"
 #include "android-framebuffer.h"
-#include "log.h"
+#include "evdev.h"
 
 struct android_compositor;
 
@@ -40,11 +47,11 @@ struct android_output {
 
 	struct weston_mode mode;
 	struct android_framebuffer *fb;
-	EGLSurface egl_surface;
 };
 
 struct android_seat {
 	struct weston_seat base;
+	struct wl_list devices_list;
 };
 
 struct android_compositor {
@@ -57,6 +64,12 @@ static inline struct android_output *
 to_android_output(struct weston_output *base)
 {
 	return container_of(base, struct android_output, base);
+}
+
+static inline struct android_seat *
+to_android_seat(struct weston_seat *base)
+{
+	return container_of(base, struct android_seat, base);
 }
 
 static inline struct android_compositor *
@@ -101,27 +114,6 @@ print_egl_error_state(void)
 		egl_error_string(code), (long)code);
 }
 
-static int
-android_output_make_current(struct android_output *output)
-{
-	struct android_compositor *compositor = output->compositor;
-	EGLBoolean ret;
-	static int errored;
-
-	ret = eglMakeCurrent(compositor->base.egl_display, output->egl_surface,
-			     output->egl_surface, compositor->base.egl_context);
-	if (ret == EGL_FALSE) {
-		if (errored)
-			return -1;
-		errored = 1;
-		weston_log("Failed to make EGL context current.\n");
-		print_egl_error_state();
-		return -1;
-	}
-
-	return 0;
-}
-
 static void
 android_finish_frame(void *data)
 {
@@ -135,26 +127,14 @@ static void
 android_output_repaint(struct weston_output *base, pixman_region32_t *damage)
 {
 	struct android_output *output = to_android_output(base);
-	struct android_compositor *compositor = output->compositor;
-	struct weston_surface *surface;
+        struct android_compositor *compositor = output->compositor;
+	struct weston_plane *primary_plane = &compositor->base.primary_plane;
 	struct wl_event_loop *loop;
-	EGLBoolean ret;
-	static int errored;
 
-	if (android_output_make_current(output) < 0)
-		return;
+	compositor->base.renderer->repaint_output(&output->base, damage);
 
-	wl_list_for_each_reverse(surface, &compositor->base.surface_list, link)
-		weston_surface_draw(surface, &output->base, damage);
-
-	wl_signal_emit(&output->base.frame_signal, output);
-
-	ret = eglSwapBuffers(compositor->base.egl_display, output->egl_surface);
-	if (ret == EGL_FALSE && !errored) {
-		errored = 1;
-		weston_log("Failed in eglSwapBuffers.\n");
-		print_egl_error_state();
-	}
+	pixman_region32_subtract(&primary_plane->damage,
+				 &primary_plane->damage, damage);
 
 	/* FIXME: does Android have a way to signal page flip done? */
 	loop = wl_display_get_event_loop(compositor->base.wl_display);
@@ -225,13 +205,92 @@ android_compositor_add_output(struct android_compositor *compositor,
 	mm_height = output->fb->height / output->fb->ydpi * 25.4f;
 	weston_output_init(&output->base, &compositor->base,
 			   0, 0, round(mm_width), round(mm_height),
-			   WL_OUTPUT_FLIPPED);
+			   WL_OUTPUT_TRANSFORM_NORMAL);
 	wl_list_insert(compositor->base.output_list.prev, &output->base.link);
+}
+
+static void
+android_led_update(struct weston_seat *seat_base, enum weston_led leds)
+{
+	struct android_seat *seat = to_android_seat(seat_base);
+	struct evdev_device *device;
+
+	wl_list_for_each(device, &seat->devices_list, link)
+		evdev_led_update(device, leds);
+}
+
+static void
+android_seat_open_device(struct android_seat *seat, const char *devnode)
+{
+	struct evdev_device *device;
+	int fd;
+
+	/* XXX: check the Android excluded list */
+
+	fd = open(devnode, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+	if (fd < 0) {
+		weston_log_continue("opening '%s' failed: %s\n", devnode,
+				    strerror(errno));
+		return;
+	}
+
+	device = evdev_device_create(&seat->base, devnode, fd);
+	if (!device) {
+		close(fd);
+		return;
+	}
+
+	wl_list_insert(seat->devices_list.prev, &device->link);
+}
+
+static int
+is_dot_or_dotdot(const char *str)
+{
+	return (str[0] == '.' &&
+		(str[1] == 0 || (str[1] == '.' && str[2] == 0)));
+}
+
+static void
+android_seat_scan_devices(struct android_seat *seat, const char *dirpath)
+{
+	int ret;
+	DIR *dir;
+	struct dirent *dent;
+	char *devnode = NULL;
+
+	dir = opendir(dirpath);
+	if (!dir) {
+		weston_log("Could not open input device directory '%s': %s\n",
+			   dirpath, strerror(errno));
+		return;
+	}
+
+	while ((dent = readdir(dir)) != NULL) {
+		if (is_dot_or_dotdot(dent->d_name))
+			continue;
+
+		ret = asprintf(&devnode, "%s/%s", dirpath, dent->d_name);
+		if (ret < 0)
+			continue;
+
+		android_seat_open_device(seat, devnode);
+		free(devnode);
+	}
+
+	closedir(dir);
 }
 
 static void
 android_seat_destroy(struct android_seat *seat)
 {
+	struct evdev_device *device, *next;
+
+	wl_list_for_each_safe(device, next, &seat->devices_list, link)
+		evdev_device_destroy(device);
+
+	if (seat->base.seat.keyboard)
+		notify_keyboard_focus_out(&seat->base);
+
 	weston_seat_release(&seat->base);
 	free(seat);
 }
@@ -246,7 +305,17 @@ android_seat_create(struct android_compositor *compositor)
 		return NULL;
 
 	weston_seat_init(&seat->base, &compositor->base);
-	compositor->base.seat = &seat->base;
+	seat->base.led_update = android_led_update;
+	wl_list_init(&seat->devices_list);
+
+	android_seat_scan_devices(seat, "/dev/input");
+
+	evdev_notify_keyboard_focus(&seat->base, &seat->devices_list);
+
+	if (wl_list_empty(&seat->devices_list))
+		weston_log("Warning: no input devices found.\n");
+
+	/* XXX: implement hotplug support */
 
 	return seat;
 }
@@ -310,11 +379,6 @@ android_init_egl(struct android_compositor *compositor,
 	EGLint eglmajor, eglminor;
 	int ret;
 
-	static const EGLint context_attrs[] = {
-		EGL_CONTEXT_CLIENT_VERSION, 2,
-		EGL_NONE
-	};
-
 	static const EGLint config_attrs[] = {
 		EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
 		EGL_RED_SIZE, 1,
@@ -339,12 +403,6 @@ android_init_egl(struct android_compositor *compositor,
 		return -1;
 	}
 
-	if (!eglBindAPI(EGL_OPENGL_ES_API)) {
-		weston_log("Failed to bind EGL_OPENGL_ES_API.\n");
-		print_egl_error_state();
-		return -1;
-	}
-
 	ret = android_egl_choose_config(compositor, output->fb, config_attrs);
 	if (ret < 0) {
 		weston_log("Failed to find an EGL config.\n");
@@ -352,30 +410,16 @@ android_init_egl(struct android_compositor *compositor,
 		return -1;
 	}
 
-	compositor->base.egl_context =
-		eglCreateContext(compositor->base.egl_display,
-				 compositor->base.egl_config,
-				 EGL_NO_CONTEXT,
-				 context_attrs);
-	if (compositor->base.egl_context == EGL_NO_CONTEXT) {
-		weston_log("Failed to create a GL ES 2 context.\n");
-		print_egl_error_state();
-		return -1;
-	}
-
-	output->egl_surface =
+	output->base.egl_surface =
 		eglCreateWindowSurface(compositor->base.egl_display,
 				       compositor->base.egl_config,
 				       output->fb->native_window,
 				       NULL);
-	if (output->egl_surface == EGL_NO_SURFACE) {
+	if (output->base.egl_surface == EGL_NO_SURFACE) {
 		weston_log("Failed to create FB EGLSurface.\n");
 		print_egl_error_state();
 		return -1;
 	}
-
-	if (android_output_make_current(output) < 0)
-		return -1;
 
 	return 0;
 }
@@ -383,6 +427,8 @@ android_init_egl(struct android_compositor *compositor,
 static void
 android_fini_egl(struct android_compositor *compositor)
 {
+	gles2_renderer_destroy(&compositor->base);
+
 	eglMakeCurrent(compositor->base.egl_display,
 		       EGL_NO_SURFACE, EGL_NO_SURFACE,
 		       EGL_NO_CONTEXT);
@@ -413,6 +459,8 @@ android_compositor_create(struct wl_display *display, int argc, char *argv[],
 	struct android_compositor *compositor;
 	struct android_output *output;
 
+	weston_log("initializing android backend\n");
+
 	compositor = calloc(1, sizeof *compositor);
 	if (compositor == NULL)
 		return NULL;
@@ -432,10 +480,10 @@ android_compositor_create(struct wl_display *display, int argc, char *argv[],
 	if (android_init_egl(compositor, output) < 0)
 		goto err_output;
 
-	if (weston_compositor_init_gl(&compositor->base) < 0)
-		goto err_egl;
-
 	android_compositor_add_output(compositor, output);
+
+	if (gles2_renderer_init(&compositor->base) < 0)
+		goto err_egl;
 
 	compositor->seat = android_seat_create(compositor);
 	if (!compositor->seat)

@@ -28,6 +28,12 @@
 #include <cairo.h>
 #include "../shared/config-parser.h"
 
+#define ARRAY_LENGTH(a) (sizeof (a) / sizeof (a)[0])
+
+#define container_of(ptr, type, member) ({				\
+	const __typeof__( ((type *)0)->member ) *__mptr = (ptr);	\
+	(type *)( (char *)__mptr - offsetof(type,member) );})
+
 struct window;
 struct widget;
 struct display;
@@ -73,6 +79,18 @@ display_get_output(struct display *display);
 uint32_t
 display_get_serial(struct display *display);
 
+typedef void (*display_global_handler_t)(struct display *display,
+					 uint32_t name,
+					 const char *interface,
+					 uint32_t version, void *data);
+
+void
+display_set_global_handler(struct display *display,
+			   display_global_handler_t handler);
+void *
+display_bind(struct display *display, uint32_t name,
+	     const struct wl_interface *interface, uint32_t version);
+
 typedef void (*display_output_handler_t)(struct output *output, void *data);
 
 /*
@@ -103,12 +121,6 @@ display_acquire_window_surface(struct display *display,
 void
 display_release_window_surface(struct display *display,
 			       struct window *window);
-
-#ifdef HAVE_CAIRO_EGL
-EGLImageKHR
-display_get_image_for_egl_image_surface(struct display *display,
-					cairo_surface_t *surface);
-#endif
 #endif
 
 #define SURFACE_OPAQUE 0x01
@@ -133,6 +145,9 @@ display_defer(struct display *display, struct task *task);
 void
 display_watch_fd(struct display *display,
 		 int fd, uint32_t events, struct task *task);
+
+void
+display_unwatch_fd(struct display *display, int fd);
 
 void
 display_run(struct display *d);
@@ -196,6 +211,11 @@ typedef void (*widget_button_handler_t)(struct widget *widget,
 					uint32_t button,
 					enum wl_pointer_button_state state,
 					void *data);
+typedef void (*widget_axis_handler_t)(struct widget *widget,
+				      struct input *input, uint32_t time,
+				      uint32_t axis,
+				      wl_fixed_t value,
+				      void *data);
 
 struct window *
 window_create(struct display *display);
@@ -204,6 +224,9 @@ window_create_transient(struct display *display, struct window *parent,
 			int32_t x, int32_t y, uint32_t flags);
 struct window *
 window_create_custom(struct display *display);
+
+int
+window_has_focus(struct window *window);
 
 typedef void (*menu_func_t)(struct window *window, int index, void *data);
 
@@ -232,8 +255,6 @@ void
 window_move(struct window *window, struct input *input, uint32_t time);
 void
 window_get_allocation(struct window *window, struct rectangle *allocation);
-void
-window_set_transparent(struct window *window, int transparent);
 void
 window_schedule_redraw(struct window *window);
 void
@@ -273,8 +294,14 @@ display_surface_damage(struct display *display, cairo_surface_t *cairo_surface,
 void
 window_set_buffer_type(struct window *window, enum window_buffer_type type);
 
+int
+window_is_fullscreen(struct window *window);
+
 void
 window_set_fullscreen(struct window *window, int fullscreen);
+
+int
+window_is_maximized(struct window *window);
 
 void
 window_set_maximized(struct window *window, int maximized);
@@ -362,6 +389,9 @@ widget_set_motion_handler(struct widget *widget,
 void
 widget_set_button_handler(struct widget *widget,
 			  widget_button_handler_t handler);
+void
+widget_set_axis_handler(struct widget *widget,
+			widget_axis_handler_t handler);
 
 void
 widget_schedule_redraw(struct widget *widget);

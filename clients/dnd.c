@@ -20,6 +20,7 @@
  * OF THIS SOFTWARE.
  */
 
+#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -268,6 +269,7 @@ data_source_target(void *data,
 	wl_surface_attach(dnd_drag->drag_surface, buffer, 0, 0);
 	wl_surface_damage(dnd_drag->drag_surface, 0, 0,
 			  dnd_drag->width, dnd_drag->height);
+	wl_surface_commit(dnd_drag->drag_surface);
 }
 
 static void
@@ -327,6 +329,12 @@ create_drag_cursor(struct dnd_drag *dnd_drag,
 	cairo_t *cr;
 
 	pointer = display_get_pointer_image(dnd->display, CURSOR_DRAGGING);
+	if (!pointer) {
+		fprintf(stderr, "WARNING: grabbing cursor image not found\n");
+		pointer = display_get_pointer_image(dnd->display,
+						    CURSOR_LEFT_PTR);
+		assert(pointer && "no cursor image found");
+	}
 
 	rectangle.width = item_width + 2 * pointer->width;
 	rectangle.height = item_height + 2 * pointer->height;
@@ -443,6 +451,7 @@ dnd_button_handler(struct widget *widget,
 				  -dnd_drag->hotspot_x, -dnd_drag->hotspot_y);
 		wl_surface_damage(dnd_drag->drag_surface, 0, 0,
 				  dnd_drag->width, dnd_drag->height);
+		wl_surface_commit(dnd_drag->drag_surface);
 
 		dnd->current_drag = dnd_drag;
 		window_schedule_redraw(dnd->window);
@@ -508,7 +517,7 @@ dnd_receive_func(void *data, size_t len, int32_t x, int32_t y, void *user_data)
 	if (len == 0) {
 		return;
 	} else if (len != sizeof *message) {
-		fprintf(stderr, "odd message length %ld, expected %ld\n",
+		fprintf(stderr, "odd message length %zu, expected %zu\n",
 			len, sizeof *message);
 		return;
 	}

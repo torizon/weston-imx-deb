@@ -35,7 +35,6 @@
 #include <sys/stat.h>
 
 #include "compositor.h"
-#include "log.h"
 
 /* Introduced in 2.6.38 */
 #ifndef K_OFF
@@ -175,7 +174,7 @@ tty_create(struct weston_compositor *compositor, tty_vt_func_t vt_func,
 		if (ioctl(tty->fd, VT_ACTIVATE, tty->vt) < 0 ||
 		    ioctl(tty->fd, VT_WAITACTIVE, tty->vt) < 0) {
 			weston_log("failed to swtich to new vt\n");
-			return NULL;
+			goto err;
 		}
 	}
 
@@ -200,19 +199,16 @@ tty_create(struct weston_compositor *compositor, tty_vt_func_t vt_func,
 	ret = ioctl(tty->fd, KDSKBMODE, K_OFF);
 	if (ret) {
 		ret = ioctl(tty->fd, KDSKBMODE, K_RAW);
-		if (ret)
+		if (ret) {
+			weston_log("failed to set keyboard mode on tty: %m\n");
 			goto err_attr;
+		}
 
 		tty->input_source = wl_event_loop_add_fd(loop, tty->fd,
 							 WL_EVENT_READABLE,
 							 on_tty_input, tty);
 		if (!tty->input_source)
 			goto err_kdkbmode;
-	}
-
-	if (ret) {
-		weston_log("failed to set K_OFF keyboard mode on tty: %m\n");
-		goto err_attr;
 	}
 
 	ret = ioctl(tty->fd, KDSETMODE, KD_GRAPHICS);
@@ -257,13 +253,9 @@ err:
 	return NULL;
 }
 
-void
-tty_destroy(struct tty *tty)
+void tty_reset(struct tty *tty)
 {
 	struct vt_mode mode = { 0 };
-
-	if (tty->input_source)
-		wl_event_source_remove(tty->input_source);
 
 	if (ioctl(tty->fd, KDSKBMODE, tty->kb_mode))
 		weston_log("failed to restore keyboard mode: %m\n");
@@ -282,8 +274,17 @@ tty_destroy(struct tty *tty)
 		ioctl(tty->fd, VT_ACTIVATE, tty->starting_vt);
 		ioctl(tty->fd, VT_WAITACTIVE, tty->starting_vt);
 	}
+}
+
+void
+tty_destroy(struct tty *tty)
+{
+	if (tty->input_source)
+		wl_event_source_remove(tty->input_source);
 
 	wl_event_source_remove(tty->vt_source);
+
+	tty_reset(tty);
 
 	close(tty->fd);
 

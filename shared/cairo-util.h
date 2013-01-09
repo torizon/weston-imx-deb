@@ -23,6 +23,9 @@
 #ifndef _CAIRO_UTIL_H
 #define _CAIRO_UTIL_H
 
+#include <cairo.h>
+#include <pixman.h>
+
 void
 surface_flush_device(cairo_surface_t *surface);
 
@@ -58,7 +61,10 @@ theme_create(void);
 void
 theme_destroy(struct theme *t);
 
-#define THEME_FRAME_ACTIVE 1
+enum {
+	THEME_FRAME_ACTIVE = 1,
+	THEME_FRAME_MAXIMIZED,
+};
 
 void
 theme_render_frame(struct theme *t, 
@@ -82,6 +88,9 @@ enum theme_location {
 };
 
 enum theme_location
-theme_get_location(struct theme *t, int x, int y, int width, int height);
+theme_get_location(struct theme *t, int x, int y, int width, int height, int flags);
+
+pixman_image_t *
+load_image(const char *filename);
 
 #endif

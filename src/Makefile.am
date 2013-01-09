@@ -13,7 +13,6 @@ weston_LDADD = $(COMPOSITOR_LIBS) $(DLOPEN_LIBS) -lm ../shared/libshared.la
 weston_SOURCES =				\
 	git-version.h				\
 	log.c					\
-	log.h					\
 	compositor.c				\
 	compositor.h				\
 	filter.c				\
@@ -28,9 +27,14 @@ weston_SOURCES =				\
 	text-backend.c				\
 	text-protocol.c				\
 	text-server-protocol.h			\
+	input-method-protocol.c			\
+	input-method-server-protocol.h		\
+	workspaces-protocol.c			\
+	workspaces-server-protocol.h		\
 	util.c					\
 	matrix.c				\
 	matrix.h				\
+	gles2-renderer.c			\
 	weston-launch.h				\
 	weston-egl-ext.h
 
@@ -70,8 +74,7 @@ module_LTLIBRARIES =				\
 	$(tablet_shell)				\
 	$(x11_backend)				\
 	$(drm_backend)				\
-	$(wayland_backend)			\
-	$(openwfd_backend)
+	$(wayland_backend)
 
 # Do not install, since the binary produced via autotools is unusable.
 # The real backend is built by the Android build system.
@@ -81,9 +84,11 @@ if ENABLE_X11_COMPOSITOR
 x11_backend = x11-backend.la
 x11_backend_la_LDFLAGS = -module -avoid-version
 x11_backend_la_LIBADD = $(COMPOSITOR_LIBS) $(X11_COMPOSITOR_LIBS) \
-	../shared/libshared.la
+	../shared/libshared-cairo.la
 x11_backend_la_CFLAGS =				\
 	$(COMPOSITOR_CFLAGS)			\
+	$(PIXMAN_CFLAGS)			\
+	$(CAIRO_CFLAGS)				\
 	$(X11_COMPOSITOR_CFLAGS)		\
 	$(GCC_CFLAGS)
 x11_backend_la_SOURCES = compositor-x11.c
@@ -103,7 +108,6 @@ drm_backend_la_SOURCES =			\
 	tty.c					\
 	evdev.c					\
 	evdev.h					\
-	evdev-private.h				\
 	evdev-touchpad.c			\
 	launcher-util.c				\
 	launcher-util.h				\
@@ -115,31 +119,31 @@ if ENABLE_WAYLAND_COMPOSITOR
 wayland_backend = wayland-backend.la
 wayland_backend_la_LDFLAGS = -module -avoid-version
 wayland_backend_la_LIBADD = $(COMPOSITOR_LIBS) $(WAYLAND_COMPOSITOR_LIBS) \
-	../shared/libshared.la
+	../shared/libshared-cairo.la
 wayland_backend_la_CFLAGS =			\
 	$(COMPOSITOR_CFLAGS)			\
+	$(PIXMAN_CFLAGS)			\
+	$(CAIRO_CFLAGS)				\
 	$(WAYLAND_COMPOSITOR_CFLAGS)		\
 	$(GCC_CFLAGS)
 wayland_backend_la_SOURCES = compositor-wayland.c
 endif
 
-if ENABLE_OPENWFD_COMPOSITOR
-openwfd_backend = openwfd-backend.la
-openwfd_backend_la_LDFLAGS = -module -avoid-version
-openwfd_backend_la_LIBADD = $(COMPOSITOR_LIBS) $(OPENWFD_COMPOSITOR_LIBS)
-openwfd_backend_la_CFLAGS = $(OPENWFD_COMPOSITOR_CFLAGS) $(GCC_CFLAGS)
-openwfd_backend_la_SOURCES = compositor-openwfd.c tty.c evdev.c evdev.h
-endif
-
 if ENABLE_ANDROID_COMPOSITOR
 android_backend = android-backend.la
 android_backend_la_LDFLAGS = -module -avoid-version
-android_backend_la_LIBADD = $(COMPOSITOR_LIBS)
-android_backend_la_CFLAGS = $(GCC_CFLAGS) $(COMPOSITOR_CFLAGS)
+android_backend_la_LIBADD = $(COMPOSITOR_LIBS) $(ANDROID_COMPOSITOR_LIBS)
+android_backend_la_CFLAGS =			\
+	$(GCC_CFLAGS)				\
+	$(COMPOSITOR_CFLAGS)			\
+	$(ANDROID_COMPOSITOR_CFLAGS)
 android_backend_la_CXXFLAGS = $(GCC_CXXFLAGS) $(COMPOSITOR_CFLAGS)
-android_backend_la_SOURCES = \
-	compositor-android.c \
-	android-framebuffer.cpp \
+android_backend_la_SOURCES =			\
+	compositor-android.c			\
+	evdev.c					\
+	evdev.h					\
+	evdev-touchpad.c			\
+	android-framebuffer.cpp			\
 	android-framebuffer.h
 endif
 
@@ -177,6 +181,10 @@ BUILT_SOURCES =					\
 	desktop-shell-server-protocol.h		\
 	text-protocol.c				\
 	text-server-protocol.h			\
+	input-method-protocol.c			\
+	input-method-server-protocol.h		\
+	workspaces-server-protocol.h		\
+	workspaces-protocol.c			\
 	git-version.h
 
 CLEANFILES = $(BUILT_SOURCES)

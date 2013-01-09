@@ -20,52 +20,46 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <assert.h>
-#include <unistd.h>
+#include "weston-test-client-helper.h"
 
-#include "test-runner.h"
-
-
-struct context {
-	struct weston_compositor *compositor;
-	struct test_client *client;
-	struct wl_listener compositor_destroy_listener;
-	int status;
-	int done;
-};
-
-static void
-compositor_destroy(struct wl_listener *listener, void *data)
+TEST(simple_keyboard_test)
 {
-	struct context *context =
-		container_of(listener, struct context,
-			     compositor_destroy_listener);
+	struct client *client;
+	struct surface *expect_focus = NULL;
+	struct keyboard *keyboard;
+	uint32_t expect_key = 0;
+	uint32_t expect_state = 0;
 
-	fprintf(stderr, "notify compositor destroy, status %d, done %d\n",
-		context->client->status, context->client->done);
+	client = client_create(10, 10, 1, 1);
+	assert(client);
 
-	assert(context->client->status == 0);
-	assert(context->client->done);
-}
+	keyboard = client->input->keyboard;
 
+	while(1) {
+		assert(keyboard->key == expect_key);
+		assert(keyboard->state == expect_state);
+		assert(keyboard->focus == expect_focus);
 
-TEST(client_test)
-{
-	struct context *context;
+		if (keyboard->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			expect_state = WL_KEYBOARD_KEY_STATE_RELEASED;
+			wl_test_send_key(client->test->wl_test, expect_key,
+				expect_state);
+		} else if (keyboard->focus) {
+			expect_focus = NULL;
+			wl_test_activate_surface(client->test->wl_test,
+						 NULL);
+		} else if (expect_key < 10) {
+			expect_key++;
+			expect_focus = client->surface;
+			expect_state = WL_KEYBOARD_KEY_STATE_PRESSED;
+			wl_test_activate_surface(client->test->wl_test,
+						 expect_focus->wl_surface);
+			wl_test_send_key(client->test->wl_test, expect_key,
+					 expect_state);
+		} else {
+			break;
+		}
 
-	context = malloc(sizeof *context);
-	assert(context);
-	context->compositor = compositor;
-	context->done = 0;
-	context->client = test_client_launch(compositor);
-	context->client->terminate = 1;
-
-	context->compositor_destroy_listener.notify = compositor_destroy;
-	wl_signal_add(&compositor->destroy_signal,
-		      &context->compositor_destroy_listener);
-
-	test_client_send(context->client, "bye\n");
+		client_roundtrip(client);
+	}
 }
