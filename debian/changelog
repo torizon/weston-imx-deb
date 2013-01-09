@@ -1,4 +1,4 @@
-weston (0.95.0-1) UNRELEASED; urgency=low
+weston (1.0.3-1) UNRELEASED; urgency=low
 
   * New upstream release.
   * Add a watch file.
