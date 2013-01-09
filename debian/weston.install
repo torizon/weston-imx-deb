@@ -1,5 +1,6 @@
 usr/bin/wcap-decode
 usr/bin/weston
+usr/bin/weston-info
 usr/bin/weston-launch
 usr/bin/weston-terminal
 
@@ -13,5 +14,6 @@ usr/lib/weston/tablet-shell.so
 usr/lib/weston/wayland-backend.so
 usr/lib/weston/x11-backend.so
 usr/lib/weston/xwayland.so
-
+usr/share/man/man1/weston.1
+usr/share/man/man7/weston-drm.7
 usr/share/weston
