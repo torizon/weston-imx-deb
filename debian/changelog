@@ -10,6 +10,7 @@ weston (1.0.3-1) UNRELEASED; urgency=low
     properly in headless-mode.
   * weston.install: Add new files.
   * control: Bump build-depends on mesa derived components to 9.0~.
+  * control, compat: Switch to debhelper 9.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Aug 2012 20:52:23 +0300
 
