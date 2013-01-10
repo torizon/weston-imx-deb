@@ -12,6 +12,7 @@ weston (1.0.3-1) UNRELEASED; urgency=low
   * control: Bump build-depends on mesa derived components to 9.0~.
   * control, compat: Switch to debhelper 9.
   * control: Bump policy to 3.9.4, no changes.
+  * control: Added homepage.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Aug 2012 20:52:23 +0300
 
