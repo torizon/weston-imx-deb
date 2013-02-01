@@ -4,7 +4,7 @@ weston (1.0.4-1) UNRELEASED; urgency=low
   * Add a watch file.
   * control: Add missing build-depends: libmtdev-dev, libxcursor-dev,
     libpam0g-dev, libvpx-dev.
-  * Switch to source format 3.0 (quilt) due to xz tarballs.
+  * Use source format 1.0.
   * control: Bump the build-depends on libxkbcommon-dev to (>= 0.1.0~2).
   * rules: Make the test run failure non-fatal, since it doesn't work
     properly in headless-mode.
