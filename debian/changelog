@@ -13,6 +13,7 @@ weston (1.0.4-1) UNRELEASED; urgency=low
   * control, compat: Switch to debhelper 9.
   * control: Bump policy to 3.9.4, no changes.
   * control: Added homepage.
+  * Add README.source.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Aug 2012 20:52:23 +0300
 
