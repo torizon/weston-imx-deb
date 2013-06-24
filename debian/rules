@@ -1,7 +1,7 @@
 #!/usr/bin/make -f
 
 override_dh_auto_configure:
-	dh_auto_configure -- --disable-setuid-install
+	dh_auto_configure -- --disable-setuid-install --disable-libunwind
 
 override_dh_auto_test:
 	# the test suite does not 100% pass in headless mode

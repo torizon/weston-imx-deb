@@ -1,5 +1,6 @@
 weston (1.1.1-1) UNRELEASED; urgency=low
 
+  [ Timo Aaltonen ]
   * New upstream release.
   * Add a watch file.
   * control: Add missing build-depends: libmtdev-dev, libxcursor-dev,
@@ -15,6 +16,10 @@ weston (1.1.1-1) UNRELEASED; urgency=low
   * control: Added homepage.
   * Add README.source.
   * patches/series: Add a placeholder file.
+
+  [ Sven Joachim ]
+  * Configure with --disable-libunwind until libunwind starts shipping
+    pkg-config files (see #711854).
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Aug 2012 20:52:23 +0300
 
