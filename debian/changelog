@@ -1,7 +1,7 @@
 weston (1.1.1-1) UNRELEASED; urgency=low
 
   [ Timo Aaltonen ]
-  * New upstream release.
+  * New upstream release (Closes: #675138, #699045).
   * Add a watch file.
   * control: Add missing build-depends: libmtdev-dev, libxcursor-dev,
     libpam0g-dev, libvpx-dev.
@@ -13,7 +13,7 @@ weston (1.1.1-1) UNRELEASED; urgency=low
   * control: Bump build-depends on mesa derived components to 9.0~.
   * control, compat: Switch to debhelper 9.
   * control: Bump policy to 3.9.4, no changes.
-  * control: Added homepage.
+  * control: Added homepage (Closes: #687571).
   * Add README.source.
   * patches/series: Add a placeholder file.
 
