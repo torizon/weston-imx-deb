@@ -29,6 +29,7 @@ Build-Depends:
  libmtdev-dev,
  libpam0g-dev,
  libvpx-dev,
+ libsystemd-login-dev,
 Standards-Version: 3.9.4
 Homepage: http://wayland.freedesktop.org/
 Vcs-Git: git://git.debian.org/git/pkg-xorg/wayland/weston

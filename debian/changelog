@@ -20,6 +20,7 @@ weston (1.1.1-1) UNRELEASED; urgency=low
   [ Sven Joachim ]
   * Configure with --disable-libunwind until libunwind starts shipping
     pkg-config files (see #711854).
+  * Add build-dependency on libsystemd-login-dev.
 
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Aug 2012 20:52:23 +0300
 
