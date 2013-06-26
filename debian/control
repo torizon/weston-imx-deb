@@ -12,6 +12,7 @@ Build-Depends:
  libpng-dev,
  libjpeg-dev,
  mesa-common-dev,
+ libglu1-mesa-dev,
  libegl1-mesa-dev (>= 9.0~),
  libegl1-mesa-drivers (>= 9.0~),
  libgles2-mesa-dev (>= 9.0~),
