@@ -22,6 +22,9 @@ weston (1.1.1-1) UNRELEASED; urgency=low
     pkg-config files (see #711854).
   * Add build-dependencies on libsystemd-login-dev and libglu1-mesa-dev.
 
+  [ Mike Gabriel ]
+  * control: add libgl1-mesa-dri to Recommends: field. (Closes: #714351).
+
  -- Timo Aaltonen <tjaalton@ubuntu.com>  Thu, 16 Aug 2012 20:52:23 +0300
 
 weston (0.85.0-1) experimental; urgency=low

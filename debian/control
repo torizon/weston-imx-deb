@@ -44,6 +44,8 @@ Depends:
  libgles2-mesa (>= 8.0-2),
  ${shlibs:Depends},
  ${misc:Depends},
+Recommends:
+ libgl1-mesa-dri,
 Description: reference implementation of a wayland compositor
  Part of the Wayland project is also the Weston reference implementation
  of a Wayland compositor. Weston can run as an X client or under Linux
