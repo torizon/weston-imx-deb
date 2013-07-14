@@ -20,8 +20,6 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#define _GNU_SOURCE
-
 #include "config.h"
 
 #include <stdio.h>
@@ -59,6 +57,8 @@
 #endif
 
 #include "weston-launch.h"
+
+#define MAX_ARGV_SIZE 256
 
 struct weston_launch {
 	struct pam_conv pc;
@@ -453,13 +453,9 @@ handle_signal(struct weston_launch *wl)
 		}
 		break;
 	case SIGTERM:
-		if (wl->child)
-			kill(wl->child, SIGTERM);
-		quit(wl, 0);
-		break;
 	case SIGINT:
 		if (wl->child)
-			kill(wl->child, SIGTERM);
+			kill(wl->child, sig.ssi_signo);
 		break;
 	default:
 		return -1;
@@ -528,8 +524,9 @@ main(int argc, char *argv[])
 	struct weston_launch wl;
 	char **env;
 	int i, c;
-	char **child_argv;
+	char *child_argv[MAX_ARGV_SIZE];
 	char *tty = NULL, *new_user = NULL;
+	char *term;
 	int sleep_fork = 0;
 	struct option opts[] = {
 		{ "user",    required_argument, NULL, 'u' },
@@ -567,8 +564,8 @@ main(int argc, char *argv[])
 		}
 	}
 
-	child_argv = &argv[optind-1];
-	child_argv[0] = BINDIR "/weston";
+	if ((argc - optind) > (MAX_ARGV_SIZE - 6))
+		error(1, E2BIG, "Too many arguments to pass to weston");
 
 	if (new_user)
 		wl.pw = getpwnam(new_user);
@@ -577,7 +574,18 @@ main(int argc, char *argv[])
 	if (wl.pw == NULL)
 		error(1, errno, "failed to get username");
 
+	child_argv[0] = wl.pw->pw_shell;
+	child_argv[1] = "-l";
+	child_argv[2] = "-c";
+	child_argv[3] = BINDIR "/weston \"$@\"";
+	child_argv[4] = "weston";
+	for (i = 0; i < (argc - optind); ++i)
+		child_argv[5 + i] = argv[optind + i];
+	child_argv[5 + i] = NULL;
+
+	term = getenv("TERM");
 	clearenv();
+	setenv("TERM", term, 1);
 	setenv("USER", wl.pw->pw_name, 1);
 	setenv("LOGNAME", wl.pw->pw_name, 1);
 	setenv("HOME", wl.pw->pw_dir, 1);
@@ -623,8 +631,12 @@ main(int argc, char *argv[])
 		}
 
 		if (setgid(wl.pw->pw_gid) < 0 ||
+#ifdef HAVE_INITGROUPS
+                    initgroups(wl.pw->pw_name, wl.pw->pw_gid) < 0 ||
+#endif
 		    setuid(wl.pw->pw_uid) < 0)
-			error(1, errno, "dropping privilidges failed");
+			error(1, errno, "dropping privileges failed");
+
 
 		if (sleep_fork) {
 			if (wl.verbose)
