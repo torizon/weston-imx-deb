@@ -1,7 +1,12 @@
 weston (1.2.0-1) UNRELEASED; urgency=low
 
+  [ Sven Joachim ]
   * New upstream release.
   * Bump libwayland-dev build-depends to (>= 1.2.0).
+
+  [ Laurent Bigonville ]
+  * debian/rules:
+    - Install weston-launch with setuid bit set
 
  -- Sven Joachim <svenjoac@gmx.de>  Sun, 14 Jul 2013 18:57:07 +0200
 
