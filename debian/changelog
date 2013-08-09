@@ -8,6 +8,8 @@ weston (1.2.0-1) UNRELEASED; urgency=low
   * debian/rules:
     - Install weston-launch with setuid bit set
     - Set libexec path to /usr/lib/weston
+  * debian/weston.lintian-overrides: Add override for the mode of weston-launch
+    executable
 
  -- Sven Joachim <svenjoac@gmx.de>  Sun, 14 Jul 2013 18:57:07 +0200
 
