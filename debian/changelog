@@ -11,6 +11,7 @@ weston (1.2.0-1) UNRELEASED; urgency=low
   * debian/weston.lintian-overrides: Add override for the mode of weston-launch
     executable
   * debian/weston.examples: Install weston.ini as an example file
+  * debian/weston.postinst: Create weston-launch group on installation
 
  -- Sven Joachim <svenjoac@gmx.de>  Sun, 14 Jul 2013 18:57:07 +0200
 
