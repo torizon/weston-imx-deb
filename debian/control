@@ -42,6 +42,7 @@ Vcs-Browser: http://git.debian.org/?p=pkg-xorg/wayland/weston.git
 Package: weston
 Architecture: linux-any
 Depends:
+ adduser,
  libegl1-mesa (>= 8.0-2),
  libegl1-mesa-drivers (>= 8.0-2),
  libgles2-mesa (>= 8.0-2),
