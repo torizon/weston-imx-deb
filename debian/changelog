@@ -16,8 +16,9 @@ weston (1.2.0-1) UNRELEASED; urgency=low
   * debian/README.Debian: Fix directions on how to run weston under KMS
     (Closes: #714379)
   * debian/control: Add a dependency against adduser
+  * debian/control: Use canonical URL's for Vcs field
 
- -- Laurent Bigonville <bigon@debian.org>  Sun, 11 Aug 2013 17:57:30 +0200
+ -- Laurent Bigonville <bigon@debian.org>  Sun, 11 Aug 2013 17:59:21 +0200
 
 weston (1.1.1-1) experimental; urgency=low
 
