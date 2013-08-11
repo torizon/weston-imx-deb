@@ -1,7 +1,7 @@
 weston (1.2.0-1) UNRELEASED; urgency=low
 
   [ Sven Joachim ]
-  * New upstream release.
+  * New upstream release (Closes: #719144).
   * Bump libwayland-dev build-depends to (>= 1.2.0).
 
   [ Laurent Bigonville ]
