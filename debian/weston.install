@@ -11,6 +11,8 @@ usr/lib/weston/weston-screensaver
 usr/lib/weston/weston-screenshooter
 usr/lib/weston/weston-simple-im
 usr/lib/*/pkgconfig/weston.pc
+usr/lib/*/weston/cms-colord.so
+usr/lib/*/weston/cms-static.so
 usr/lib/*/weston/desktop-shell.so
 usr/lib/*/weston/drm-backend.so
 usr/lib/*/weston/fbdev-backend.so
