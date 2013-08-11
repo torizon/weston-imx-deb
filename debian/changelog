@@ -13,6 +13,8 @@ weston (1.2.0-1) UNRELEASED; urgency=low
   * debian/weston.examples: Install weston.ini as an example file
   * debian/weston.postinst: Create weston-launch group on installation
   * debian/control, debian/weston.install: Enable colord support
+  * debian/README.Debian: Fix directions on how to run weston under KMS
+    (Closes: #714379)
 
  -- Sven Joachim <svenjoac@gmx.de>  Sun, 14 Jul 2013 18:57:07 +0200
 
