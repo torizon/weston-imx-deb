@@ -6,12 +6,13 @@ weston (1.2.0-1) UNRELEASED; urgency=low
 
   [ Laurent Bigonville ]
   * debian/rules:
-    - Install weston-launch with setuid bit set
+    - Install weston-launch with setuid bit set (LP: #1102597)
     - Set libexec path to /usr/lib/weston
   * debian/weston.lintian-overrides: Add override for the mode of weston-launch
     executable
   * debian/weston.examples: Install weston.ini as an example file
   * debian/weston.postinst: Create weston-launch group on installation
+    (LP: #1203017)
   * debian/control, debian/weston.install: Enable colord support
   * debian/README.Debian: Fix directions on how to run weston under KMS
     (Closes: #714379)
