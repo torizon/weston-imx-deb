@@ -21,6 +21,8 @@
  * OF THIS SOFTWARE.
  */
 
+#include <config.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,7 +97,7 @@ shm_format(void *data, struct wl_shm *wl_shm, uint32_t format)
 		touch->has_argb = 1;
 }
 
-struct wl_shm_listener shm_listenter = {
+struct wl_shm_listener shm_listener = {
 	shm_format
 };
 
@@ -141,6 +143,7 @@ touch_paint(struct touch *touch, int32_t x, int32_t y, int32_t id)
 	p += touch->width;
 	p[2] = c;
 
+	wl_surface_attach(touch->surface, touch->buffer, 0, 0);
 	wl_surface_damage(touch->surface, x - 2, y - 2, 5, 5);
 	/* todo: We could queue up more damage before committing, if there
 	 * are more input events to handle.
@@ -256,7 +259,7 @@ handle_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, "wl_shm") == 0) {
 		touch->shm = wl_registry_bind(registry, name,
 					      &wl_shm_interface, 1);
-		wl_shm_add_listener(touch->shm, &shm_listenter, touch);
+		wl_shm_add_listener(touch->shm, &shm_listener, touch);
 	} else if (strcmp(interface, "wl_seat") == 0) {
 		touch->seat = wl_registry_bind(registry, name,
 					       &wl_seat_interface, 1);

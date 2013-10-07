@@ -20,6 +20,8 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include "config.h"
+
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
@@ -983,8 +985,8 @@ notify_keyboard_focus_out(struct weston_seat *seat)
 	weston_keyboard_end_grab(keyboard);
 }
 
-static void
-touch_set_focus(struct weston_seat *seat, struct weston_surface *surface)
+WL_EXPORT void
+weston_touch_set_focus(struct weston_seat *seat, struct weston_surface *surface)
 {
 	struct wl_resource *resource;
 
@@ -1045,7 +1047,7 @@ notify_touch(struct weston_seat *seat, uint32_t time, int touch_id,
 		 * until all touch points are up again. */
 		if (seat->num_tp == 1) {
 			es = weston_compositor_pick_surface(ec, x, y, &sx, &sy);
-			touch_set_focus(seat, es);
+			weston_touch_set_focus(seat, es);
 		} else if (touch->focus) {
 			es = (struct weston_surface *) touch->focus;
 			weston_surface_from_global_fixed(es, x, y, &sx, &sy);
@@ -1059,6 +1061,14 @@ notify_touch(struct weston_seat *seat, uint32_t time, int touch_id,
 		}
 
 		grab->interface->down(grab, time, touch_id, sx, sy);
+		if (seat->num_tp == 1) {
+			touch->grab_serial =
+				wl_display_get_serial(ec->wl_display);
+			touch->grab_time = time;
+			touch->grab_x = x;
+			touch->grab_y = y;
+		}
+
 		break;
 	case WL_TOUCH_MOTION:
 		es = (struct weston_surface *) touch->focus;
@@ -1074,7 +1084,7 @@ notify_touch(struct weston_seat *seat, uint32_t time, int touch_id,
 
 		grab->interface->up(grab, time, touch_id);
 		if (seat->num_tp == 0)
-			touch_set_focus(seat, NULL);
+			weston_touch_set_focus(seat, NULL);
 		break;
 	}
 }
@@ -1177,6 +1187,11 @@ seat_get_pointer(struct wl_client *client, struct wl_resource *resource,
 
         cr = wl_resource_create(client, &wl_pointer_interface,
 				wl_resource_get_version(resource), id);
+	if (cr == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
 	wl_list_insert(&seat->pointer->resource_list, wl_resource_get_link(cr));
 	wl_resource_set_implementation(cr, &pointer_interface, seat->pointer,
 				       unbind_resource);
@@ -1211,6 +1226,11 @@ seat_get_keyboard(struct wl_client *client, struct wl_resource *resource,
 
         cr = wl_resource_create(client, &wl_keyboard_interface,
 				wl_resource_get_version(resource), id);
+	if (cr == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
 	wl_list_insert(&seat->keyboard->resource_list, wl_resource_get_link(cr));
 	wl_resource_set_implementation(cr, NULL, seat, unbind_resource);
 
@@ -1246,6 +1266,11 @@ seat_get_touch(struct wl_client *client, struct wl_resource *resource,
 
         cr = wl_resource_create(client, &wl_touch_interface,
 				wl_resource_get_version(resource), id);
+	if (cr == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
 	wl_list_insert(&seat->touch->resource_list, wl_resource_get_link(cr));
 	wl_resource_set_implementation(cr, NULL, seat, unbind_resource);
 }

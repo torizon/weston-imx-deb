@@ -270,6 +270,11 @@ struct widget {
 	widget_leave_handler_t leave_handler;
 	widget_motion_handler_t motion_handler;
 	widget_button_handler_t button_handler;
+	widget_touch_down_handler_t touch_down_handler;
+	widget_touch_up_handler_t touch_up_handler;
+	widget_touch_motion_handler_t touch_motion_handler;
+	widget_touch_frame_handler_t touch_frame_handler;
+	widget_touch_cancel_handler_t touch_cancel_handler;
 	widget_axis_handler_t axis_handler;
 	void *user_data;
 	int opaque;
@@ -277,13 +282,22 @@ struct widget {
 	int default_cursor;
 };
 
+struct touch_point {
+	int32_t id;
+	struct widget *widget;
+	struct wl_list link;
+};
+
 struct input {
 	struct display *display;
 	struct wl_seat *seat;
 	struct wl_pointer *pointer;
 	struct wl_keyboard *keyboard;
+	struct wl_touch *touch;
+	struct wl_list touch_point_list;
 	struct window *pointer_focus;
 	struct window *keyboard_focus;
+	struct window *touch_focus;
 	int current_cursor;
 	uint32_t cursor_anim_start;
 	struct wl_callback *cursor_frame_cb;
@@ -1520,7 +1534,9 @@ window_destroy(struct window *window)
 
 	wl_list_remove(&window->redraw_task.link);
 
-	wl_list_for_each(input, &display->input_list, link) {
+	wl_list_for_each(input, &display->input_list, link) {	  
+		if (input->touch_focus == window)
+			input->touch_focus = NULL;
 		if (input->pointer_focus == window)
 			input->pointer_focus = NULL;
 		if (input->keyboard_focus == window)
@@ -1870,6 +1886,41 @@ widget_set_button_handler(struct widget *widget,
 			  widget_button_handler_t handler)
 {
 	widget->button_handler = handler;
+}
+
+void
+widget_set_touch_up_handler(struct widget *widget,
+			    widget_touch_up_handler_t handler)
+{
+	widget->touch_up_handler = handler;
+}
+
+void
+widget_set_touch_down_handler(struct widget *widget,
+			      widget_touch_down_handler_t handler)
+{
+	widget->touch_down_handler = handler;
+}
+
+void
+widget_set_touch_motion_handler(struct widget *widget,
+				widget_touch_motion_handler_t handler)
+{
+	widget->touch_motion_handler = handler;
+}
+
+void
+widget_set_touch_frame_handler(struct widget *widget,
+			       widget_touch_frame_handler_t handler)
+{
+	widget->touch_frame_handler = handler;
+}
+
+void
+widget_set_touch_cancel_handler(struct widget *widget,
+				widget_touch_cancel_handler_t handler)
+{
+	widget->touch_cancel_handler = handler;
 }
 
 void
@@ -2286,6 +2337,35 @@ frame_button_button_handler(struct widget *widget,
 	}
 }
 
+static void
+frame_button_touch_down_handler(struct widget *widget, struct input *input,
+				uint32_t serial, uint32_t time, int32_t id,
+				float x, float y, void *data)
+{
+	struct frame_button *frame_button = data;
+	struct window *window = widget->window;
+
+	switch (frame_button->type) {
+	case FRAME_BUTTON_CLOSE:
+		if (window->close_handler)
+			window->close_handler(window->parent,
+					      window->user_data);
+		else
+			display_exit(window->display);
+		break;
+	case FRAME_BUTTON_MINIMIZE:
+		fprintf(stderr,"Minimize stub\n");
+		break;
+	case FRAME_BUTTON_MAXIMIZE:
+		window_set_maximized(window, window->type != TYPE_MAXIMIZED);
+		break;
+	default:
+		/* Unknown operation */
+		break;
+	}
+}
+
+
 static int
 frame_button_motion_handler(struct widget *widget,
                             struct input *input, uint32_t time,
@@ -2387,6 +2467,7 @@ frame_button_create(struct frame *frame, void *data, enum frame_button_action ty
 	widget_set_redraw_handler(frame_button->widget, frame_button_redraw_handler);
 	widget_set_enter_handler(frame_button->widget, frame_button_enter_handler);
 	widget_set_leave_handler(frame_button->widget, frame_button_leave_handler);
+	widget_set_touch_down_handler(frame_button->widget, frame_button_touch_down_handler);
 	widget_set_button_handler(frame_button->widget, frame_button_button_handler);
 	widget_set_motion_handler(frame_button->widget, frame_button_motion_handler);
 	return frame_button->widget;
@@ -2598,6 +2679,19 @@ frame_button_handler(struct widget *widget,
 	}
 }
 
+static void 
+frame_touch_down_handler(struct widget *widget, struct input *input,
+			 uint32_t serial, uint32_t time, int32_t id,
+			 float x, float y, void *data)
+{
+	struct window *window = widget->window;
+	struct display *display = window->display;
+	
+	wl_shell_surface_move(window->shell_surface,
+			      input_get_seat(input),
+			      display->serial);
+}
+
 struct widget *
 frame_create(struct window *window, void *data)
 {
@@ -2614,6 +2708,7 @@ frame_create(struct window *window, void *data)
 	widget_set_enter_handler(frame->widget, frame_enter_handler);
 	widget_set_motion_handler(frame->widget, frame_motion_handler);
 	widget_set_button_handler(frame->widget, frame_button_handler);
+	widget_set_touch_down_handler(frame->widget, frame_touch_down_handler);
 
 	/* Create empty list for frame buttons */
 	wl_list_init(&frame->buttons_list);
@@ -3103,6 +3198,152 @@ static const struct wl_keyboard_listener keyboard_listener = {
 };
 
 static void
+touch_handle_down(void *data, struct wl_touch *wl_touch,
+		  uint32_t serial, uint32_t time, struct wl_surface *surface,
+		  int32_t id, wl_fixed_t x_w, wl_fixed_t y_w)
+{
+	struct input *input = data;
+	struct widget *widget;
+	float sx = wl_fixed_to_double(x_w);
+	float sy = wl_fixed_to_double(y_w);
+
+	input->display->serial = serial;
+	input->touch_focus = wl_surface_get_user_data(surface);
+	if (!input->touch_focus) {
+		DBG("Failed to find to touch focus for surface %p\n", surface);
+		return;
+	}
+
+	widget = window_find_widget(input->touch_focus,
+				    wl_fixed_to_double(x_w),
+				    wl_fixed_to_double(y_w));
+	if (widget) {
+		struct touch_point *tp = xmalloc(sizeof *tp);
+		if (tp) {
+			tp->id = id;
+			tp->widget = widget;
+			wl_list_insert(&input->touch_point_list, &tp->link);
+
+			if (widget->touch_down_handler)
+				(*widget->touch_down_handler)(widget, input, 
+							      serial, time, id,
+							      sx, sy,
+							      widget->user_data);
+		}
+	}
+}
+
+static void
+touch_handle_up(void *data, struct wl_touch *wl_touch,
+		uint32_t serial, uint32_t time, int32_t id)
+{
+	struct input *input = data;
+	struct touch_point *tp, *tmp;
+
+	if (!input->touch_focus) {
+		DBG("No touch focus found for touch up event!\n");
+		return;
+	}
+
+	wl_list_for_each_safe(tp, tmp, &input->touch_point_list, link) {
+		if (tp->id != id)
+			continue;
+
+		if (tp->widget->touch_up_handler)
+			(*tp->widget->touch_up_handler)(tp->widget, input, serial,
+							time, id,
+							tp->widget->user_data);
+
+		wl_list_remove(&tp->link);
+		free(tp);
+
+		return;
+	}
+}
+
+static void
+touch_handle_motion(void *data, struct wl_touch *wl_touch,
+		    uint32_t time, int32_t id, wl_fixed_t x_w, wl_fixed_t y_w)
+{
+	struct input *input = data;
+	struct touch_point *tp;
+	float sx = wl_fixed_to_double(x_w);
+	float sy = wl_fixed_to_double(y_w);
+
+	DBG("touch_handle_motion: %i %i\n", id, wl_list_length(&input->touch_point_list));
+
+	if (!input->touch_focus) {
+		DBG("No touch focus found for touch motion event!\n");
+		return;
+	}
+
+	wl_list_for_each(tp, &input->touch_point_list, link) {
+		if (tp->id != id)
+			continue;
+
+		if (tp->widget->touch_motion_handler)
+			(*tp->widget->touch_motion_handler)(tp->widget, input, time,
+							    id, sx, sy,
+							    tp->widget->user_data);
+		return;
+	}
+}
+
+static void
+touch_handle_frame(void *data, struct wl_touch *wl_touch)
+{
+	struct input *input = data;
+	struct touch_point *tp, *tmp;
+
+	DBG("touch_handle_frame\n");
+
+	if (!input->touch_focus) {
+		DBG("No touch focus found for touch frame event!\n");
+		return;
+	}
+
+	wl_list_for_each_safe(tp, tmp, &input->touch_point_list, link) {
+		if (tp->widget->touch_frame_handler)
+			(*tp->widget->touch_frame_handler)(tp->widget, input, 
+							   tp->widget->user_data);
+
+		wl_list_remove(&tp->link);
+		free(tp);
+	}
+}
+
+static void
+touch_handle_cancel(void *data, struct wl_touch *wl_touch)
+{
+	struct input *input = data;
+	struct touch_point *tp, *tmp;
+
+	DBG("touch_handle_cancel\n");
+
+	if (!input->touch_focus) {
+		DBG("No touch focus found for touch cancel event!\n");
+		return;
+	}
+
+	wl_list_for_each_safe(tp, tmp, &input->touch_point_list, link) {
+		if (tp->widget->touch_cancel_handler)
+			(*tp->widget->touch_cancel_handler)(tp->widget, input,
+							    tp->widget->user_data);
+
+		wl_list_remove(&tp->link);
+		free(tp);
+	}
+}
+
+static const struct wl_touch_listener touch_listener = {
+	touch_handle_down,
+	touch_handle_up,
+	touch_handle_motion,
+	touch_handle_frame,
+	touch_handle_cancel,
+};
+
+static void
 seat_handle_capabilities(void *data, struct wl_seat *seat,
 			 enum wl_seat_capability caps)
 {
@@ -3126,6 +3367,15 @@ seat_handle_capabilities(void *data, struct wl_seat *seat,
 	} else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && input->keyboard) {
 		wl_keyboard_destroy(input->keyboard);
 		input->keyboard = NULL;
+	}
+
+	if ((caps & WL_SEAT_CAPABILITY_TOUCH) && !input->touch) {
+		input->touch = wl_seat_get_touch(seat);
+		wl_touch_set_user_data(input->touch, input);
+		wl_touch_add_listener(input->touch, &touch_listener, input);
+	} else if (!(caps & WL_SEAT_CAPABILITY_TOUCH) && input->touch) {
+		wl_touch_destroy(input->touch);
+		input->touch = NULL;
 	}
 }
 
@@ -3560,6 +3810,16 @@ window_move(struct window *window, struct input *input, uint32_t serial)
 		return;
 
 	wl_shell_surface_move(window->shell_surface, input->seat, serial);
+}
+
+void
+window_touch_move(struct window *window, struct input *input, uint32_t serial)
+{
+	if (!window->shell_surface)
+		return;
+
+	wl_shell_surface_move(window->shell_surface, input->seat, 
+			      window->display->serial);
 }
 
 static void
@@ -4190,10 +4450,7 @@ window_create_internal(struct display *display,
 	struct window *window;
 	struct surface *surface;
 
-	window = malloc(sizeof *window);
-	if (window == NULL)
-		return NULL;
-
+	window = xmalloc(sizeof *window);
 	memset(window, 0, sizeof *window);
 	wl_list_init(&window->subsurface_list);
 	window->display = display;
@@ -4206,6 +4463,7 @@ window_create_internal(struct display *display,
 		window->shell_surface =
 			wl_shell_get_shell_surface(display->shell,
 						   surface->surface);
+		fail_on_null(window->shell_surface);
 	}
 
 	window->type = type;
@@ -4251,13 +4509,7 @@ window_create(struct display *display)
 struct window *
 window_create_custom(struct display *display)
 {
-	struct window *window;
-
-	window = window_create_internal(display, NULL, TYPE_CUSTOM);
-	if (!window)
-		return NULL;
-
-	return window;
+	return window_create_internal(display, NULL, TYPE_CUSTOM);
 }
 
 struct window *
@@ -4268,8 +4520,6 @@ window_create_transient(struct display *display, struct window *parent,
 
 	window = window_create_internal(parent->display,
 					parent, TYPE_TRANSIENT);
-	if (!window)
-		return NULL;
 
 	window->x = x;
 	window->y = y;
@@ -4688,8 +4938,10 @@ display_add_input(struct display *d, uint32_t id)
 	memset(input, 0, sizeof *input);
 	input->display = d;
 	input->seat = wl_registry_bind(d->registry, id, &wl_seat_interface, 1);
+	input->touch_focus = NULL;
 	input->pointer_focus = NULL;
 	input->keyboard_focus = NULL;
+	wl_list_init(&input->touch_point_list);
 	wl_list_insert(d->input_list.prev, &input->link);
 
 	wl_seat_add_listener(input->seat, &seat_listener, input);
@@ -4882,11 +5134,6 @@ init_egl(struct display *d)
 		return -1;
 	}
 
-	if (!eglMakeCurrent(d->dpy, NULL, NULL, d->argb_ctx)) {
-		fprintf(stderr, "failed to make EGL context current\n");
-		return -1;
-	}
-
 	d->argb_device = cairo_egl_device_create(d->dpy, d->argb_ctx);
 	if (cairo_device_status(d->argb_device) != CAIRO_STATUS_SUCCESS) {
 		fprintf(stderr, "failed to get cairo EGL argb device\n");
@@ -4986,6 +5233,13 @@ display_create(int *argc, char *argv[])
 		return NULL;
 	}
 
+	d->xkb_context = xkb_context_new(0);
+	if (d->xkb_context == NULL) {
+		fprintf(stderr, "Failed to create XKB context\n");
+		free(d);
+		return NULL;
+	}
+
 	d->epoll_fd = os_epoll_create_cloexec();
 	d->display_fd = wl_display_get_fd(d->display);
 	d->display_task.run = handle_display_data;
@@ -4996,12 +5250,6 @@ display_create(int *argc, char *argv[])
 	wl_list_init(&d->input_list);
 	wl_list_init(&d->output_list);
 	wl_list_init(&d->global_list);
-
-	d->xkb_context = xkb_context_new(0);
-	if (d->xkb_context == NULL) {
-		fprintf(stderr, "Failed to create XKB context\n");
-		return NULL;
-	}
 
 	d->workspace = 0;
 	d->workspace_count = 1;
@@ -5308,4 +5556,27 @@ keysym_modifiers_get_mask(struct wl_array *modifiers_map,
 		return XKB_MOD_INVALID;
 
 	return 1 << index;
+}
+
+void *
+fail_on_null(void *p)
+{
+	if (p == NULL) {
+		fprintf(stderr, "wayland-scanner: out of memory\n");
+		exit(EXIT_FAILURE);
+	}
+
+	return p;
+}
+
+void *
+xmalloc(size_t s)
+{
+	return fail_on_null(malloc(s));
+}
+
+char *
+xstrdup(const char *s)
+{
+	return fail_on_null(strdup(s));
 }

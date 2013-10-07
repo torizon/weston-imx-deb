@@ -25,7 +25,6 @@
 
 #include <errno.h>
 #include <stdlib.h>
-#include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
 #include <fcntl.h>
@@ -239,6 +238,7 @@ drm_fb_create_dumb(struct drm_compositor *ec, unsigned width, unsigned height)
 	if (!fb)
 		return NULL;
 
+	memset(&create_arg, 0, sizeof create_arg);
 	create_arg.bpp = 32;
 	create_arg.width = width;
 	create_arg.height = height;
@@ -257,7 +257,7 @@ drm_fb_create_dumb(struct drm_compositor *ec, unsigned width, unsigned height)
 	if (ret)
 		goto err_bo;
 
-	memset(&map_arg, 0, sizeof(map_arg));
+	memset(&map_arg, 0, sizeof map_arg);
 	map_arg.handle = fb->handle;
 	ret = drmIoctl(fb->fd, DRM_IOCTL_MODE_MAP_DUMB, &map_arg);
 	if (ret)
@@ -1673,7 +1673,7 @@ parse_modeline(const char *s, drmModeModeInfo *mode)
 	mode->vrefresh = 0;
 	mode->flags = 0;
 
-	if (sscanf(s, "%f %hd %hd %hd %hd %hd %hd %hd %hd %s %s",
+	if (sscanf(s, "%f %hd %hd %hd %hd %hd %hd %hd %hd %15s %15s",
 		   &fclock,
 		   &mode->hdisplay,
 		   &mode->hsync_start,

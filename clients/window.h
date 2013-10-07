@@ -53,6 +53,13 @@ struct rectangle {
 	int32_t height;
 };
 
+void *
+fail_on_null(void *p);
+void *
+xmalloc(size_t s);
+char *
+xstrdup(const char *s);
+
 struct display *
 display_create(int *argc, char *argv[]);
 
@@ -220,6 +227,31 @@ typedef void (*widget_button_handler_t)(struct widget *widget,
 					uint32_t button,
 					enum wl_pointer_button_state state,
 					void *data);
+typedef void (*widget_touch_down_handler_t)(struct widget *widget,
+					    struct input *input,
+					    uint32_t serial,
+					    uint32_t time,
+					    int32_t id,
+					    float x,
+					    float y,
+					    void *data);
+typedef void (*widget_touch_up_handler_t)(struct widget *widget,
+					  struct input *input,
+					  uint32_t serial,
+					  uint32_t time,
+					  int32_t id,
+					  void *data);
+typedef void (*widget_touch_motion_handler_t)(struct widget *widget,
+					      struct input *input,
+					      uint32_t time,
+					      int32_t id,
+					      float x,
+					      float y,
+					      void *data);
+typedef void (*widget_touch_frame_handler_t)(struct widget *widget, 
+					     struct input *input, void *data);
+typedef void (*widget_touch_cancel_handler_t)(struct widget *widget, 
+					      struct input *input, void *data);
 typedef void (*widget_axis_handler_t)(struct widget *widget,
 				      struct input *input, uint32_t time,
 				      uint32_t axis,
@@ -288,6 +320,8 @@ struct display *
 window_get_display(struct window *window);
 void
 window_move(struct window *window, struct input *input, uint32_t time);
+void
+window_touch_move(struct window *window, struct input *input, uint32_t time);
 void
 window_get_allocation(struct window *window, struct rectangle *allocation);
 void
@@ -436,9 +470,23 @@ void
 widget_set_button_handler(struct widget *widget,
 			  widget_button_handler_t handler);
 void
+widget_set_touch_down_handler(struct widget *widget,
+			      widget_touch_down_handler_t handler);
+void
+widget_set_touch_up_handler(struct widget *widget,
+			    widget_touch_up_handler_t handler);
+void
+widget_set_touch_motion_handler(struct widget *widget,
+				widget_touch_motion_handler_t handler);
+void
+widget_set_touch_frame_handler(struct widget *widget,
+			       widget_touch_frame_handler_t handler);
+void
+widget_set_touch_cancel_handler(struct widget *widget,
+				widget_touch_cancel_handler_t handler);
+void
 widget_set_axis_handler(struct widget *widget,
 			widget_axis_handler_t handler);
-
 void
 widget_schedule_redraw(struct widget *widget);
 

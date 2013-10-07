@@ -1,6 +1,6 @@
 m4_define([weston_major_version], [1])
 m4_define([weston_minor_version], [2])
-m4_define([weston_micro_version], [0])
+m4_define([weston_micro_version], [2])
 m4_define([weston_version],
           [weston_major_version.weston_minor_version.weston_micro_version])
 
@@ -19,6 +19,7 @@ AC_SUBST([WESTON_VERSION], [weston_version])
 AC_CONFIG_HEADERS([config.h])
 
 AC_USE_SYSTEM_EXTENSIONS
+AC_SYS_LARGEFILE
 
 AM_INIT_AUTOMAKE([1.11 parallel-tests foreign no-dist-gzip dist-xz color-tests])
 
@@ -189,7 +190,7 @@ AM_CONDITIONAL([ENABLE_FBDEV_COMPOSITOR],
                [test x$enable_fbdev_compositor = xyes])
 AS_IF([test x$enable_fbdev_compositor = xyes], [
   AC_DEFINE([BUILD_FBDEV_COMPOSITOR], [1], [Build the fbdev compositor])
-  PKG_CHECK_MODULES([FBDEV_COMPOSITOR], [libudev >= 136 mtdev >= 1.1.0])
+  PKG_CHECK_MODULES([FBDEV_COMPOSITOR], [libudev >= 136 mtdev >= 1.1.0 libdrm >= 2.4.30])
 ])
 
 AC_ARG_ENABLE([rdp-compositor], [  --enable-rdp-compositor],,
@@ -201,14 +202,36 @@ if test x$enable_rdp_compositor = xyes; then
   PKG_CHECK_MODULES(RDP_COMPOSITOR, [freerdp >= 1.1.0])
 fi
 
+AC_ARG_WITH(cairo,
+	    AS_HELP_STRING([--with-cairo=@<:@image|gl|glesv2@:>@]
+			   [Which Cairo renderer to use for the clients]),
+			   [],[with_cairo="image"])
+
+if test "x$with_cairo" = "ximage"; then
+	cairo_modules="cairo"
+else
+if test "x$with_cairo" = "xgl"; then
+	cairo_modules="cairo-gl"
+else
+if test "x$with_cairo" = "xglesv2"; then
+	cairo_modules="cairo-glesv2"
+else
+	AC_ERROR([Unknown cairo renderer requested])
+fi
+fi
+fi
+
+# Included for legacy compat
 AC_ARG_WITH(cairo-glesv2,
             AS_HELP_STRING([--with-cairo-glesv2],
-                           [Use GLESv2 cairo instead of full GL]))
+                           [Use GLESv2 cairo]))
 if test "x$with_cairo_glesv2" = "xyes"; then
   cairo_modules="cairo-glesv2"
-  AC_DEFINE([USE_CAIRO_GLESV2], [1], [Use the GLESv2 GL cairo backend])
-else
-  cairo_modules="cairo-gl"
+  with_cairo="glesv2"
+fi
+
+if test "x$cairo_modules" = "xcairo-glesv2"; then
+AC_DEFINE([USE_CAIRO_GLESV2], [1], [Use the GLESv2 GL cairo backend])
 fi
 
 PKG_CHECK_MODULES(PIXMAN, [pixman-1])
@@ -257,11 +280,16 @@ if test x$enable_clients = xyes; then
 
   PKG_CHECK_MODULES(POPPLER, [poppler-glib glib-2.0 gobject-2.0 gio-2.0 ],
 			     [have_poppler=yes], [have_poppler=no])
-  PKG_CHECK_MODULES(CAIRO_EGL, [wayland-egl egl >= 7.10 cairo-egl >= 1.11.3 $cairo_modules],
-		    [have_cairo_egl=yes], [have_cairo_egl=no])
-  AS_IF([test "x$have_cairo_egl" = "xyes"],
-        [AC_DEFINE([HAVE_CAIRO_EGL], [1], [Have cairo-egl])],
-        [AC_MSG_WARN([clients will use cairo image, cairo-egl not used because $CAIRO_EGL_PKG_ERRORS])])
+
+  # Only check for cairo-egl if a GL or GLES renderer requested
+  AS_IF([test "x$cairo_modules" = "xcairo-gl" -o "x$cairo_modules" = "xcairo-glesv2"], [
+    PKG_CHECK_MODULES(CAIRO_EGL, [wayland-egl egl >= 7.10 cairo-egl >= 1.11.3 $cairo_modules],
+                      [have_cairo_egl=yes], [have_cairo_egl=no])
+    AS_IF([test "x$have_cairo_egl" = "xyes"],
+	  [AC_DEFINE([HAVE_CAIRO_EGL], [1], [Have cairo-egl])],
+	  [AC_ERROR([cairo-egl not used because $CAIRO_EGL_PKG_ERRORS])])],
+  [have_cairo_egl=no])
+
   PKG_CHECK_MODULES(PANGO, [pangocairo], [have_pango=yes], [have_pango=no])
 fi
 
@@ -383,6 +411,12 @@ AC_MSG_NOTICE([Weston's native backend: $WESTON_NATIVE_BACKEND])
 AC_DEFINE_UNQUOTED([WESTON_NATIVE_BACKEND], ["$WESTON_NATIVE_BACKEND"],
 		   [The default backend to load, if not wayland nor x11.])
 
+AC_ARG_ENABLE(demo-clients,
+              AS_HELP_STRING([--enable-demo-clients],
+                             [install demo clients built with weston]),,
+              enable_demo_clients=no)
+AM_CONDITIONAL(ENABLE_DEMO_CLIENTS, [test "x$enable_demo_clients" = "xyes"])
+
 PKG_CHECK_MODULES(LCMS, lcms2,
                   [have_lcms=yes], [have_lcms=no])
 if test "x$have_lcms" = xyes; then
@@ -390,7 +424,8 @@ if test "x$have_lcms" = xyes; then
 fi
 AM_CONDITIONAL(HAVE_LCMS, [test "x$have_lcms" = xyes])
 
-WAYLAND_SCANNER_RULES(['$(top_srcdir)/protocol'])
+AC_PATH_PROG([wayland_scanner], [wayland-scanner],
+	     [AC_MSG_ERROR("wayland-scanner is needed to compile weston")])
 
 AC_CONFIG_FILES([Makefile
 		 shared/Makefile
@@ -405,3 +440,42 @@ AC_CONFIG_FILES([Makefile
 		 man/Makefile
 		 tests/Makefile])
 AC_OUTPUT
+
+AC_MSG_RESULT([
+	Native Backend			${WESTON_NATIVE_BACKEND}
+	setuid Install			${enable_setuid_install}
+
+	Cairo Renderer			${with_cairo}
+	EGL				${enable_egl}
+	libxkbcommon			${enable_xkbcommon}
+	XWayland			${enable_xwayland}
+
+	Build wcap utility		${enable_wcap_tools}
+	Build Tablet Shell		${enable_tablet_shell}
+
+	weston-launch utility		${enable_weston_launch}
+	weston-launch systemd support	${have_systemd_login}
+
+	DRM Compositor			${enable_drm_compositor}
+	X11 Compositor			${enable_x11_compositor}
+	Wayland Compositor		${enable_wayland_compositor}
+	Headless Compositor		${enable_headless_compositor}
+	RPI Compositor			${enable_rpi_compositor}
+	FBDEV Compositor		${enable_fbdev_compositor}
+	RDP Compositor			${enable_rdp_compositor}
+
+	Raspberry Pi BCM headers	${have_bcm_host}
+
+	Build Clients			${enable_clients}
+	Build EGL Clients		${have_cairo_egl}
+	Build Simple Clients		${enable_simple_clients}
+	Build Simple EGL Clients	${enable_simple_egl_clients}
+
+	Install Demo Clients		${enable_demo_clients}
+
+	Colord Support			${have_colord}
+	GLU Support			${have_glu}
+	LCMS2 Support			${have_lcms}
+	libwebp Support			${have_webp}
+	libunwind Support		${have_libunwind}
+])

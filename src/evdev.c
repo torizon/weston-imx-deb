@@ -45,7 +45,7 @@ evdev_led_update(struct evdev_device *device, enum weston_led leds)
 		{ LED_CAPS_LOCK, LED_CAPSL },
 		{ LED_SCROLL_LOCK, LED_SCROLLL },
 	};
-	struct input_event ev[ARRAY_LENGTH(map)];
+	struct input_event ev[ARRAY_LENGTH(map) + 1];
 	unsigned int i;
 
 	if (!device->caps & EVDEV_KEYBOARD)
@@ -57,6 +57,8 @@ evdev_led_update(struct evdev_device *device, enum weston_led leds)
 		ev[i].code = map[i].evdev;
 		ev[i].value = !!(leds & map[i].weston);
 	}
+	ev[i].type = EV_SYN;
+	ev[i].code = SYN_REPORT;
 
 	i = write(device->fd, ev, sizeof ev);
 	(void)i; /* no, we really don't care about the return value */
@@ -65,6 +67,7 @@ evdev_led_update(struct evdev_device *device, enum weston_led leds)
 static inline void
 evdev_process_key(struct evdev_device *device, struct input_event *e, int time)
 {
+	/* ignore kernel key repeat */
 	if (e->value == 2)
 		return;
 
@@ -83,6 +86,11 @@ evdev_process_key(struct evdev_device *device, struct input_event *e, int time)
 					 WL_POINTER_BUTTON_STATE_RELEASED);
 		break;
 
+	case BTN_TOUCH:
+		if (e->value == 0 && !device->is_mt)
+			notify_touch(device->seat, time, 0, 0, 0,
+				     WL_TOUCH_UP);
+		break;
 	default:
 		notify_key(device->seat,
 			   time, e->code,
@@ -112,15 +120,13 @@ evdev_process_touch(struct evdev_device *device, struct input_event *e)
 	case ABS_MT_POSITION_X:
 		device->mt.x[device->mt.slot] =
 			(e->value - device->abs.min_x) * screen_width /
-			(device->abs.max_x - device->abs.min_x) +
-			device->output->x;
+			(device->abs.max_x - device->abs.min_x);
 		device->pending_events |= EVDEV_ABSOLUTE_MT_MOTION;
 		break;
 	case ABS_MT_POSITION_Y:
 		device->mt.y[device->mt.slot] =
 			(e->value - device->abs.min_y) * screen_height /
-			(device->abs.max_y - device->abs.min_y) +
-			device->output->y;
+			(device->abs.max_y - device->abs.min_y);
 		device->pending_events |= EVDEV_ABSOLUTE_MT_MOTION;
 		break;
 	}
@@ -137,15 +143,13 @@ evdev_process_absolute_motion(struct evdev_device *device,
 	case ABS_X:
 		device->abs.x =
 			(e->value - device->abs.min_x) * screen_width /
-			(device->abs.max_x - device->abs.min_x) +
-			device->output->x;
+			(device->abs.max_x - device->abs.min_x);
 		device->pending_events |= EVDEV_ABSOLUTE_MOTION;
 		break;
 	case ABS_Y:
 		device->abs.y =
 			(e->value - device->abs.min_y) * screen_height /
-			(device->abs.max_y - device->abs.min_y) +
-			device->output->y;
+			(device->abs.max_y - device->abs.min_y);
 		device->pending_events |= EVDEV_ABSOLUTE_MOTION;
 		break;
 	}
@@ -232,28 +236,35 @@ is_motion_event(struct input_event *e)
 }
 
 static void
-transform_absolute(struct evdev_device *device)
+transform_absolute(struct evdev_device *device, int32_t *x, int32_t *y)
 {
-	if (!device->abs.apply_calibration)
-		return;
+       if (!device->abs.apply_calibration) {
+               *x = device->abs.x;
+               *y = device->abs.y;
+               return;
+       } else {
+               *x = device->abs.x * device->abs.calibration[0] +
+                       device->abs.y * device->abs.calibration[1] +
+                       device->abs.calibration[2];
 
-	device->abs.x = device->abs.x * device->abs.calibration[0] +
-			device->abs.y * device->abs.calibration[1] +
-			device->abs.calibration[2];
-
-	device->abs.y = device->abs.x * device->abs.calibration[3] +
-			device->abs.y * device->abs.calibration[4] +
-			device->abs.calibration[5];
+               *y = device->abs.x * device->abs.calibration[3] +
+                       device->abs.y * device->abs.calibration[4] +
+                       device->abs.calibration[5];
+       }
 }
 
 static void
 evdev_flush_motion(struct evdev_device *device, uint32_t time)
 {
-	struct weston_seat *master = device->seat;
+       struct weston_seat *master = device->seat;
+       wl_fixed_t x, y;
+       int32_t cx, cy;
+       int slot;
 
-	if (!(device->pending_events & EVDEV_SYN))
+       if (!(device->pending_events & EVDEV_SYN))
 		return;
 
+	slot = device->mt.slot;
 	device->pending_events &= ~EVDEV_SYN;
 	if (device->pending_events & EVDEV_RELATIVE_MOTION) {
 		notify_motion(master, time, device->rel.dx, device->rel.dy);
@@ -262,33 +273,44 @@ evdev_flush_motion(struct evdev_device *device, uint32_t time)
 		device->rel.dy = 0;
 	}
 	if (device->pending_events & EVDEV_ABSOLUTE_MT_DOWN) {
+		weston_output_transform_coordinate(device->output,
+						   device->mt.x[slot],
+						   device->mt.y[slot],
+						   &x, &y);
 		notify_touch(master, time,
-			     device->mt.slot,
-			     wl_fixed_from_int(device->mt.x[device->mt.slot]),
-			     wl_fixed_from_int(device->mt.y[device->mt.slot]),
-			     WL_TOUCH_DOWN);
+			     device->mt.slot, x, y, WL_TOUCH_DOWN);
 		device->pending_events &= ~EVDEV_ABSOLUTE_MT_DOWN;
 		device->pending_events &= ~EVDEV_ABSOLUTE_MT_MOTION;
 	}
 	if (device->pending_events & EVDEV_ABSOLUTE_MT_MOTION) {
+		weston_output_transform_coordinate(device->output,
+						   device->mt.x[slot],
+						   device->mt.y[slot],
+						   &x, &y);
 		notify_touch(master, time,
-			     device->mt.slot,
-			     wl_fixed_from_int(device->mt.x[device->mt.slot]),
-			     wl_fixed_from_int(device->mt.y[device->mt.slot]),
-			     WL_TOUCH_MOTION);
+			     device->mt.slot, x, y, WL_TOUCH_MOTION);
 		device->pending_events &= ~EVDEV_ABSOLUTE_MT_DOWN;
 		device->pending_events &= ~EVDEV_ABSOLUTE_MT_MOTION;
 	}
 	if (device->pending_events & EVDEV_ABSOLUTE_MT_UP) {
 		notify_touch(master, time, device->mt.slot, 0, 0,
 			     WL_TOUCH_UP);
-		device->pending_events &= ~EVDEV_ABSOLUTE_MT_UP;
-	}
-	if (device->pending_events & EVDEV_ABSOLUTE_MOTION) {
-		transform_absolute(device);
-		notify_motion_absolute(master, time,
-			      wl_fixed_from_int(device->abs.x),
-			      wl_fixed_from_int(device->abs.y));
+               device->pending_events &= ~EVDEV_ABSOLUTE_MT_UP;
+       }
+       if (device->pending_events & EVDEV_ABSOLUTE_MOTION) {
+               transform_absolute(device, &cx, &cy);
+               weston_output_transform_coordinate(device->output,
+                                                  cx, cy, &x, &y);
+
+               if (device->caps & EVDEV_TOUCH) {
+                       if (master->num_tp == 0)
+				notify_touch(master, time, 0,
+					     x, y, WL_TOUCH_DOWN);
+			else
+				notify_touch(master, time, 0,
+					     x, y, WL_TOUCH_MOTION);
+		} else
+			notify_motion_absolute(master, time, x, y);
 		device->pending_events &= ~EVDEV_ABSOLUTE_MOTION;
 	}
 }
@@ -421,6 +443,16 @@ evdev_handle_device(struct evdev_device *device)
 
 		ioctl(device->fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)),
 		      abs_bits);
+
+		if (TEST_BIT(abs_bits, ABS_WHEEL) ||
+		    TEST_BIT(abs_bits, ABS_GAS) ||
+		    TEST_BIT(abs_bits, ABS_BRAKE) ||
+		    TEST_BIT(abs_bits, ABS_HAT0X)) {
+			weston_log("device %s is a joystick, ignoring\n",
+				   device->devnode);
+			return 0;
+		}
+
 		if (TEST_BIT(abs_bits, ABS_X)) {
 			ioctl(device->fd, EVIOCGABS(ABS_X), &absinfo);
 			device->abs.min_x = absinfo.minimum;
@@ -433,7 +465,11 @@ evdev_handle_device(struct evdev_device *device)
 			device->abs.max_y = absinfo.maximum;
 			device->caps |= EVDEV_MOTION_ABS;
 		}
-		if (TEST_BIT(abs_bits, ABS_MT_SLOT)) {
+                /* We only handle the slotted Protocol B in weston.
+                   Devices with ABS_MT_POSITION_* but not ABS_MT_SLOT
+                   require mtdev for conversion. */
+		if (TEST_BIT(abs_bits, ABS_MT_POSITION_X) &&
+		    TEST_BIT(abs_bits, ABS_MT_POSITION_Y)) {
 			ioctl(device->fd, EVIOCGABS(ABS_MT_POSITION_X),
 			      &absinfo);
 			device->abs.min_x = absinfo.minimum;
@@ -443,8 +479,21 @@ evdev_handle_device(struct evdev_device *device)
 			device->abs.min_y = absinfo.minimum;
 			device->abs.max_y = absinfo.maximum;
 			device->is_mt = 1;
-			device->mt.slot = 0;
 			device->caps |= EVDEV_TOUCH;
+
+			if (!TEST_BIT(abs_bits, ABS_MT_SLOT)) {
+				device->mtdev = mtdev_new_open(device->fd);
+				if (!device->mtdev) {
+					weston_log("mtdev required but failed to open for %s\n",
+						   device->devnode);
+					return 0;
+				}
+				device->mt.slot = device->mtdev->caps.slot.value;
+			} else {
+				ioctl(device->fd, EVIOCGABS(ABS_MT_SLOT),
+				      &absinfo);
+				device->mt.slot = absinfo.value;
+			}
 		}
 	}
 	if (TEST_BIT(ev_bits, EV_REL)) {
@@ -459,8 +508,11 @@ evdev_handle_device(struct evdev_device *device)
 		      key_bits);
 		if (TEST_BIT(key_bits, BTN_TOOL_FINGER) &&
 		    !TEST_BIT(key_bits, BTN_TOOL_PEN) &&
-		    has_abs)
+		    has_abs) {
 			device->dispatch = evdev_touchpad_create(device);
+			weston_log("input device %s, %s is a touchpad\n",
+				   device->devname, device->devnode);
+		}
 		for (i = KEY_ESC; i < KEY_MAX; i++) {
 			if (i >= BTN_MISC && i < KEY_OK)
 				continue;
@@ -475,6 +527,10 @@ evdev_handle_device(struct evdev_device *device)
 				break;
 			}
 		}
+		if (TEST_BIT(key_bits, BTN_TOUCH)) {
+			device->caps |= EVDEV_TOUCH;
+		}
+
 	}
 	if (TEST_BIT(ev_bits, EV_LED)) {
 		device->caps |= EVDEV_KEYBOARD;
@@ -545,47 +601,36 @@ evdev_device_create(struct weston_seat *seat, const char *path, int device_fd)
 	device->rel.dy = 0;
 	device->dispatch = NULL;
 	device->fd = device_fd;
+	wl_list_init(&device->link);
 
 	ioctl(device->fd, EVIOCGNAME(sizeof(devname)), devname);
+	devname[sizeof(devname) - 1] = '\0';
 	device->devname = strdup(devname);
 
 	if (!evdev_handle_device(device)) {
-		free(device->devnode);
-		free(device->devname);
-		free(device);
+		evdev_device_destroy(device);
 		return EVDEV_UNHANDLED_DEVICE;
 	}
 
 	if (evdev_configure_device(device) == -1)
-		goto err1;
+		goto err;
 
 	/* If the dispatch was not set up use the fallback. */
 	if (device->dispatch == NULL)
 		device->dispatch = fallback_dispatch_create();
 	if (device->dispatch == NULL)
-		goto err1;
-
-
-	if (device->is_mt) {
-		device->mtdev = mtdev_new_open(device->fd);
-		if (!device->mtdev)
-			weston_log("mtdev failed to open for %s\n", path);
-	}
+		goto err;
 
 	device->source = wl_event_loop_add_fd(ec->input_loop, device->fd,
 					      WL_EVENT_READABLE,
 					      evdev_device_data, device);
 	if (device->source == NULL)
-		goto err2;
+		goto err;
 
 	return device;
 
-err2:
-	device->dispatch->interface->destroy(device->dispatch);
-err1:
-	free(device->devname);
-	free(device->devnode);
-	free(device);
+err:
+	evdev_device_destroy(device);
 	return NULL;
 }
 
@@ -598,7 +643,8 @@ evdev_device_destroy(struct evdev_device *device)
 	if (dispatch)
 		dispatch->interface->destroy(dispatch);
 
-	wl_event_source_remove(device->source);
+	if (device->source)
+		wl_event_source_remove(device->source);
 	wl_list_remove(&device->link);
 	if (device->mtdev)
 		mtdev_close_delete(device->mtdev);

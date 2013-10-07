@@ -20,6 +20,8 @@
  * OF THIS SOFTWARE.
  */
 
+#include "config.h"
+
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -120,6 +122,11 @@ wl_data_source_send_offer(struct wl_data_source *source,
 	offer->resource =
 		wl_resource_create(wl_resource_get_client(target),
 				   &wl_data_offer_interface, 1, 0);
+	if (offer->resource == NULL) {
+		free(offer);
+		return NULL;
+	}
+
 	wl_resource_set_implementation(offer->resource, &data_offer_interface,
 				       offer, destroy_data_offer);
 
@@ -229,8 +236,11 @@ weston_drag_set_focus(struct weston_drag *drag, struct weston_surface *surface,
 	display = wl_client_get_display(wl_resource_get_client(resource));
 	serial = wl_display_next_serial(display);
 
-	if (drag->data_source)
+	if (drag->data_source) {
 		offer = wl_data_source_send_offer(drag->data_source, resource);
+		if (offer == NULL)
+			return;
+	}
 
 	wl_data_device_send_enter(resource, serial, surface->resource,
 				  sx, sy, offer);
@@ -567,8 +577,13 @@ get_data_device(struct wl_client *client,
 
 	resource = wl_resource_create(client,
 				      &wl_data_device_interface, 1, id);
+	if (resource == NULL) {
+		wl_resource_post_no_memory(manager_resource);
+		return;
+	}
 
-	wl_list_insert(&seat->drag_resource_list, wl_resource_get_link(resource));
+	wl_list_insert(&seat->drag_resource_list,
+		       wl_resource_get_link(resource));
 	wl_resource_set_implementation(resource, &data_device_interface,
 				       seat, unbind_data_device);
 }
@@ -587,9 +602,13 @@ bind_manager(struct wl_client *client,
 	resource =
 		wl_resource_create(client,
 				   &wl_data_device_manager_interface, 1, id);
-	if (resource)
-		wl_resource_set_implementation(resource, &manager_interface,
-					       NULL, NULL);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	wl_resource_set_implementation(resource, &manager_interface,
+				       NULL, NULL);
 }
 
 WL_EXPORT void

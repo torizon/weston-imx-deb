@@ -988,6 +988,8 @@ weston_surface_unmap(struct weston_surface *surface)
 						 NULL,
 						 wl_fixed_from_int(0),
 						 wl_fixed_from_int(0));
+		if (seat->touch && seat->touch->focus == surface)
+			weston_touch_set_focus(seat, NULL);
 	}
 
 	weston_surface_schedule_repaint(surface);
@@ -1490,9 +1492,14 @@ surface_frame(struct wl_client *client,
 		return;
 	}
 
-	cb->resource = wl_resource_create(client,
-						      &wl_callback_interface,
-						      1, callback);
+	cb->resource = wl_resource_create(client, &wl_callback_interface, 1,
+					  callback);
+	if (cb->resource == NULL) {
+		free(cb);
+		wl_resource_post_no_memory(resource);
+		return;
+	}
+
 	wl_resource_set_implementation(cb->resource, NULL, cb,
 				       destroy_frame_callback);
 
@@ -1694,6 +1701,11 @@ compositor_create_surface(struct wl_client *client,
 	surface->resource =
 		wl_resource_create(client, &wl_surface_interface,
 				   wl_resource_get_version(resource), id);
+	if (surface->resource == NULL) {
+		weston_surface_destroy(surface);
+		wl_resource_post_no_memory(resource);
+		return;
+	}
 	wl_resource_set_implementation(surface->resource, &surface_interface,
 				       surface, destroy_surface);
 }
@@ -1757,6 +1769,11 @@ compositor_create_region(struct wl_client *client,
 
 	region->resource =
 		wl_resource_create(client, &wl_region_interface, 1, id);
+	if (region->resource == NULL) {
+		free(region);
+		wl_resource_post_no_memory(resource);
+		return;
+	}
 	wl_resource_set_implementation(region->resource, &region_interface,
 				       region, destroy_region);
 }
@@ -2417,10 +2434,12 @@ bind_subcompositor(struct wl_client *client,
 
 	resource =
 		wl_resource_create(client, &wl_subcompositor_interface, 1, id);
-	if (resource)
-		wl_resource_set_implementation(resource,
-					       &subcompositor_interface, 
-					       compositor, NULL);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &subcompositor_interface,
+				       compositor, NULL);
 }
 
 static void
@@ -2540,6 +2559,10 @@ bind_output(struct wl_client *client,
 
 	resource = wl_resource_create(client, &wl_output_interface,
 				      MIN(version, 2), id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
 
 	wl_list_insert(&output->resource_list, wl_resource_get_link(resource));
 	wl_resource_set_implementation(resource, NULL, data, unbind_resource);
@@ -2751,6 +2774,57 @@ weston_output_init(struct weston_output *output, struct weston_compositor *c,
 	wl_signal_emit(&c->output_created_signal, output);
 }
 
+WL_EXPORT void
+weston_output_transform_coordinate(struct weston_output *output,
+				   int device_x, int device_y,
+				   wl_fixed_t *x, wl_fixed_t *y)
+{
+	wl_fixed_t tx, ty;
+	wl_fixed_t width, height;
+
+	width = wl_fixed_from_int(output->width * output->scale - 1);
+	height = wl_fixed_from_int(output->height * output->scale - 1);
+
+	switch(output->transform) {
+	case WL_OUTPUT_TRANSFORM_NORMAL:
+	default:
+		tx = wl_fixed_from_int(device_x);
+		ty = wl_fixed_from_int(device_y);
+		break;
+	case WL_OUTPUT_TRANSFORM_90:
+		tx = wl_fixed_from_int(device_y);
+		ty = height - wl_fixed_from_int(device_x);
+		break;
+	case WL_OUTPUT_TRANSFORM_180:
+		tx = width - wl_fixed_from_int(device_x);
+		ty = height - wl_fixed_from_int(device_y);
+		break;
+	case WL_OUTPUT_TRANSFORM_270:
+		tx = width - wl_fixed_from_int(device_y);
+		ty = wl_fixed_from_int(device_x);
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED:
+		tx = width - wl_fixed_from_int(device_x);
+		ty = wl_fixed_from_int(device_y);
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+		tx = width - wl_fixed_from_int(device_y);
+		ty = height - wl_fixed_from_int(device_x);
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+		tx = wl_fixed_from_int(device_x);
+		ty = height - wl_fixed_from_int(device_y);
+		break;
+	case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+		tx = wl_fixed_from_int(device_y);
+		ty = wl_fixed_from_int(device_x);
+		break;
+	}
+
+	*x = tx / output->scale + wl_fixed_from_int(output->x);
+	*y = ty / output->scale + wl_fixed_from_int(output->y);
+}
+
 static void
 compositor_bind(struct wl_client *client,
 		void *data, uint32_t version, uint32_t id)
@@ -2760,9 +2834,13 @@ compositor_bind(struct wl_client *client,
 
 	resource = wl_resource_create(client, &wl_compositor_interface,
 				      MIN(version, 3), id);
-	if (resource)
-		wl_resource_set_implementation(resource, &compositor_interface,
-					       compositor, NULL);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	wl_resource_set_implementation(resource, &compositor_interface,
+				       compositor, NULL);
 }
 
 static void
