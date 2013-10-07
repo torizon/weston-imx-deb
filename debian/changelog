@@ -19,6 +19,10 @@ weston (1.2.2-1) UNRELEASED; urgency=low
   * debian/control: Add a dependency against adduser
   * debian/control: Use canonical URL's for Vcs field
 
+  [ Timo Aaltonen ]
+  * rules: Explicitly enable cairo-gl so that weston-screensaver gets
+    built.
+
  -- Laurent Bigonville <bigon@debian.org>  Sun, 11 Aug 2013 17:59:21 +0200
 
 weston (1.1.1-1) experimental; urgency=low
