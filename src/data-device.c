@@ -31,7 +31,7 @@
 
 struct weston_drag {
 	struct wl_client *client;
-	struct wl_data_source *data_source;
+	struct weston_data_source *data_source;
 	struct wl_listener data_source_listener;
 	struct weston_surface *focus;
 	struct wl_resource *focus_resource;
@@ -53,7 +53,7 @@ static void
 data_offer_accept(struct wl_client *client, struct wl_resource *resource,
 		  uint32_t serial, const char *mime_type)
 {
-	struct wl_data_offer *offer = wl_resource_get_user_data(resource);
+	struct weston_data_offer *offer = wl_resource_get_user_data(resource);
 
 	/* FIXME: Check that client is currently focused by the input
 	 * device that is currently dragging this data source.  Should
@@ -67,7 +67,7 @@ static void
 data_offer_receive(struct wl_client *client, struct wl_resource *resource,
 		   const char *mime_type, int32_t fd)
 {
-	struct wl_data_offer *offer = wl_resource_get_user_data(resource);
+	struct weston_data_offer *offer = wl_resource_get_user_data(resource);
 
 	if (offer->source)
 		offer->source->send(offer->source, mime_type, fd);
@@ -90,7 +90,7 @@ static const struct wl_data_offer_interface data_offer_interface = {
 static void
 destroy_data_offer(struct wl_resource *resource)
 {
-	struct wl_data_offer *offer = wl_resource_get_user_data(resource);
+	struct weston_data_offer *offer = wl_resource_get_user_data(resource);
 
 	if (offer->source)
 		wl_list_remove(&offer->source_destroy_listener.link);
@@ -100,19 +100,19 @@ destroy_data_offer(struct wl_resource *resource)
 static void
 destroy_offer_data_source(struct wl_listener *listener, void *data)
 {
-	struct wl_data_offer *offer;
+	struct weston_data_offer *offer;
 
-	offer = container_of(listener, struct wl_data_offer,
+	offer = container_of(listener, struct weston_data_offer,
 			     source_destroy_listener);
 
 	offer->source = NULL;
 }
 
 static struct wl_resource *
-wl_data_source_send_offer(struct wl_data_source *source,
-			  struct wl_resource *target)
+weston_data_source_send_offer(struct weston_data_source *source,
+			      struct wl_resource *target)
 {
-	struct wl_data_offer *offer;
+	struct weston_data_offer *offer;
 	char **p;
 
 	offer = malloc(sizeof *offer);
@@ -148,7 +148,8 @@ data_source_offer(struct wl_client *client,
 		  struct wl_resource *resource,
 		  const char *type)
 {
-	struct wl_data_source *source = wl_resource_get_user_data(resource);
+	struct weston_data_source *source =
+		wl_resource_get_user_data(resource);
 	char **p;
 
 	p = wl_array_add(&source->mime_types, sizeof *p);
@@ -211,7 +212,7 @@ weston_drag_set_focus(struct weston_drag *drag, struct weston_surface *surface,
 {
 	struct weston_pointer *pointer = drag->grab.pointer;
 	struct wl_resource *resource, *offer = NULL;
-	struct wl_display *display;
+	struct wl_display *display = pointer->seat->compositor->wl_display;
 	uint32_t serial;
 
 	if (drag->focus_resource) {
@@ -233,11 +234,11 @@ weston_drag_set_focus(struct weston_drag *drag, struct weston_surface *surface,
 	if (!resource)
 		return;
 
-	display = wl_client_get_display(wl_resource_get_client(resource));
 	serial = wl_display_next_serial(display);
 
 	if (drag->data_source) {
-		offer = wl_data_source_send_offer(drag->data_source, resource);
+		offer = weston_data_source_send_offer(drag->data_source,
+						      resource);
 		if (offer == NULL)
 			return;
 	}
@@ -357,51 +358,30 @@ handle_drag_icon_destroy(struct wl_listener *listener, void *data)
 	drag->icon = NULL;
 }
 
-static void
-data_device_start_drag(struct wl_client *client, struct wl_resource *resource,
-		       struct wl_resource *source_resource,
-		       struct wl_resource *origin_resource,
-		       struct wl_resource *icon_resource, uint32_t serial)
+WL_EXPORT int
+weston_seat_start_drag(struct weston_seat *seat,
+		       struct weston_data_source *source,
+		       struct weston_surface *icon,
+		       struct wl_client *client)
 {
-	struct weston_seat *seat = wl_resource_get_user_data(resource);
 	struct weston_drag *drag;
-	struct weston_surface *icon = NULL;
 
-	if (seat->pointer->button_count == 0 ||
-	    seat->pointer->grab_serial != serial ||
-	    seat->pointer->focus != wl_resource_get_user_data(origin_resource))
-		return;
+	drag = zalloc(sizeof *drag);
+	if (drag == NULL)
+		return -1;
 
-	/* FIXME: Check that the data source type array isn't empty. */
-
-	if (icon_resource)
-		icon = wl_resource_get_user_data(icon_resource);
-	if (icon && icon->configure) {
-		wl_resource_post_error(icon_resource,
-				       WL_DISPLAY_ERROR_INVALID_OBJECT,
-				       "surface->configure already set");
-		return;
-	}
-
-	drag = malloc(sizeof *drag);
-	if (drag == NULL) {
-		wl_resource_post_no_memory(resource);
-		return;
-	}
-
-	memset(drag, 0, sizeof *drag);
 	drag->grab.interface = &drag_grab_interface;
 	drag->client = client;
+	drag->data_source = source;
+	drag->icon = icon;
 
-	if (source_resource) {
-		drag->data_source = wl_resource_get_user_data(source_resource);
+	if (source) {
 		drag->data_source_listener.notify = destroy_data_device_source;
-		wl_resource_add_destroy_listener(source_resource,
-						 &drag->data_source_listener);
+		wl_signal_add(&source->destroy_signal,
+			      &drag->data_source_listener);
 	}
 
 	if (icon) {
-		drag->icon = icon;
 		drag->icon_destroy_listener.notify = handle_drag_icon_destroy;
 		wl_signal_add(&icon->destroy_signal,
 			      &drag->icon_destroy_listener);
@@ -413,6 +393,40 @@ data_device_start_drag(struct wl_client *client, struct wl_resource *resource,
 	weston_pointer_set_focus(seat->pointer, NULL,
 				 wl_fixed_from_int(0), wl_fixed_from_int(0));
 	weston_pointer_start_grab(seat->pointer, &drag->grab);
+
+	return 0;
+}
+
+static void
+data_device_start_drag(struct wl_client *client, struct wl_resource *resource,
+		       struct wl_resource *source_resource,
+		       struct wl_resource *origin_resource,
+		       struct wl_resource *icon_resource, uint32_t serial)
+{
+	struct weston_seat *seat = wl_resource_get_user_data(resource);
+	struct weston_data_source *source = NULL;
+	struct weston_surface *icon = NULL;
+
+	if (seat->pointer->button_count == 0 ||
+	    seat->pointer->grab_serial != serial ||
+	    seat->pointer->focus != wl_resource_get_user_data(origin_resource))
+		return;
+
+	/* FIXME: Check that the data source type array isn't empty. */
+
+	if (source_resource)
+		source = wl_resource_get_user_data(source_resource);
+	if (icon_resource)
+		icon = wl_resource_get_user_data(icon_resource);
+	if (icon && icon->configure) {
+		wl_resource_post_error(icon_resource,
+				       WL_DISPLAY_ERROR_INVALID_OBJECT,
+				       "surface->configure already set");
+		return;
+	}
+
+	if (weston_seat_start_drag(seat, source, icon, client) < 0)
+		wl_resource_post_no_memory(resource);
 }
 
 static void
@@ -421,15 +435,15 @@ destroy_selection_data_source(struct wl_listener *listener, void *data)
 	struct weston_seat *seat = container_of(listener, struct weston_seat,
 						selection_data_source_listener);
 	struct wl_resource *data_device;
-	struct wl_resource *focus = NULL;
+	struct weston_surface *focus = NULL;
 
 	seat->selection_data_source = NULL;
 
 	if (seat->keyboard)
-		focus = seat->keyboard->focus_resource;
-	if (focus) {
+		focus = seat->keyboard->focus;
+	if (focus && focus->resource) {
 		data_device = wl_resource_find_for_client(&seat->drag_resource_list,
-							  wl_resource_get_client(focus));
+							  wl_resource_get_client(focus->resource));
 		if (data_device)
 			wl_data_device_send_selection(data_device, NULL);
 	}
@@ -439,10 +453,10 @@ destroy_selection_data_source(struct wl_listener *listener, void *data)
 
 WL_EXPORT void
 weston_seat_set_selection(struct weston_seat *seat,
-			  struct wl_data_source *source, uint32_t serial)
+			  struct weston_data_source *source, uint32_t serial)
 {
 	struct wl_resource *data_device, *offer;
-	struct wl_resource *focus = NULL;
+	struct weston_surface *focus = NULL;
 
 	if (seat->selection_data_source &&
 	    seat->selection_serial - serial < UINT32_MAX / 2)
@@ -458,13 +472,13 @@ weston_seat_set_selection(struct weston_seat *seat,
 	seat->selection_serial = serial;
 
 	if (seat->keyboard)
-		focus = seat->keyboard->focus_resource;
-	if (focus) {
+		focus = seat->keyboard->focus;
+	if (focus && focus->resource) {
 		data_device = wl_resource_find_for_client(&seat->drag_resource_list,
-							  wl_resource_get_client(focus));
+							  wl_resource_get_client(focus->resource));
 		if (data_device && source) {
-			offer = wl_data_source_send_offer(seat->selection_data_source,
-							  data_device);
+			offer = weston_data_source_send_offer(seat->selection_data_source,
+							      data_device);
 			wl_data_device_send_selection(data_device, offer);
 		} else if (data_device) {
 			wl_data_device_send_selection(data_device, NULL);
@@ -503,7 +517,8 @@ static const struct wl_data_device_interface data_device_interface = {
 static void
 destroy_data_source(struct wl_resource *resource)
 {
-	struct wl_data_source *source = wl_resource_get_user_data(resource);
+	struct weston_data_source *source =
+		wl_resource_get_user_data(resource);
 	char **p;
 
 	wl_signal_emit(&source->destroy_signal, source);
@@ -517,14 +532,14 @@ destroy_data_source(struct wl_resource *resource)
 }
 
 static void
-client_source_accept(struct wl_data_source *source,
+client_source_accept(struct weston_data_source *source,
 		     uint32_t time, const char *mime_type)
 {
 	wl_data_source_send_target(source->resource, mime_type);
 }
 
 static void
-client_source_send(struct wl_data_source *source,
+client_source_send(struct weston_data_source *source,
 		   const char *mime_type, int32_t fd)
 {
 	wl_data_source_send_send(source->resource, mime_type, fd);
@@ -532,7 +547,7 @@ client_source_send(struct wl_data_source *source,
 }
 
 static void
-client_source_cancel(struct wl_data_source *source)
+client_source_cancel(struct weston_data_source *source)
 {
 	wl_data_source_send_cancelled(source->resource);
 }
@@ -541,7 +556,7 @@ static void
 create_data_source(struct wl_client *client,
 		   struct wl_resource *resource, uint32_t id)
 {
-	struct wl_data_source *source;
+	struct weston_data_source *source;
 
 	source = malloc(sizeof *source);
 	if (source == NULL) {
@@ -614,24 +629,25 @@ bind_manager(struct wl_client *client,
 WL_EXPORT void
 wl_data_device_set_keyboard_focus(struct weston_seat *seat)
 {
-	struct wl_resource *data_device, *focus, *offer;
-	struct wl_data_source *source;
+	struct wl_resource *data_device, *offer;
+	struct weston_data_source *source;
+	struct weston_surface *focus;
 
 	if (!seat->keyboard)
 		return;
 
-	focus = seat->keyboard->focus_resource;
-	if (!focus)
+	focus = seat->keyboard->focus;
+	if (!focus || !focus->resource)
 		return;
 
 	data_device = wl_resource_find_for_client(&seat->drag_resource_list,
-						  wl_resource_get_client(focus));
+						  wl_resource_get_client(focus->resource));
 	if (!data_device)
 		return;
 
 	source = seat->selection_data_source;
 	if (source) {
-		offer = wl_data_source_send_offer(source, data_device);
+		offer = weston_data_source_send_offer(source, data_device);
 		wl_data_device_send_selection(data_device, offer);
 	}
 }

@@ -1,6 +1,6 @@
 m4_define([weston_major_version], [1])
-m4_define([weston_minor_version], [2])
-m4_define([weston_micro_version], [2])
+m4_define([weston_minor_version], [3])
+m4_define([weston_micro_version], [0])
 m4_define([weston_version],
           [weston_major_version.weston_minor_version.weston_micro_version])
 
@@ -55,7 +55,7 @@ AC_CHECK_HEADERS([execinfo.h])
 
 AC_CHECK_FUNCS([mkostemp strchrnul initgroups])
 
-COMPOSITOR_MODULES="wayland-server >= 1.1.90 pixman-1"
+COMPOSITOR_MODULES="wayland-server >= 1.2.91 pixman-1"
 
 AC_ARG_ENABLE(egl, [  --disable-egl],,
               enable_egl=yes)
@@ -190,7 +190,7 @@ AM_CONDITIONAL([ENABLE_FBDEV_COMPOSITOR],
                [test x$enable_fbdev_compositor = xyes])
 AS_IF([test x$enable_fbdev_compositor = xyes], [
   AC_DEFINE([BUILD_FBDEV_COMPOSITOR], [1], [Build the fbdev compositor])
-  PKG_CHECK_MODULES([FBDEV_COMPOSITOR], [libudev >= 136 mtdev >= 1.1.0 libdrm >= 2.4.30])
+  PKG_CHECK_MODULES([FBDEV_COMPOSITOR], [libudev >= 136 mtdev >= 1.1.0])
 ])
 
 AC_ARG_ENABLE([rdp-compositor], [  --enable-rdp-compositor],,
@@ -240,6 +240,20 @@ PKG_CHECK_MODULES(WEBP, [libwebp], [have_webp=yes], [have_webp=no])
 AS_IF([test "x$have_webp" = "xyes"],
       [AC_DEFINE([HAVE_WEBP], [1], [Have webp])])
 
+AC_ARG_ENABLE(vaapi-recorder, [  --enable-vaapi-recorder],,
+	      enable_vaapi_recorder=auto)
+if test x$enable_vaapi_recorder != xno; then
+  PKG_CHECK_MODULES(LIBVA, [libva >= 0.34.0 libva-drm >= 0.34.0],
+                    [have_libva=yes], [have_libva=no])
+  if test "x$have_libva" = "xno" -a "x$enable_vaapi_recorder" = "xyes"; then
+    AC_MSG_ERROR([vaapi-recorder explicitly enabled, but libva couldn't be found])
+  fi
+  AS_IF([test "x$have_libva" = "xyes"],
+        [AC_DEFINE([BUILD_VAAPI_RECORDER], [1], [Build the vaapi recorder])])
+fi
+AM_CONDITIONAL(ENABLE_VAAPI_RECORDER, test "x$have_libva" = xyes)
+
+
 AC_CHECK_LIB([jpeg], [jpeg_CreateDecompress], have_jpeglib=yes)
 if test x$have_jpeglib = xyes; then
   JPEG_LIBS="-ljpeg"
@@ -262,9 +276,9 @@ fi
 AC_ARG_ENABLE(simple-egl-clients,
               AS_HELP_STRING([--disable-simple-egl-clients],
                              [do not build the simple EGL clients]),,
-              enable_simple_egl_clients=yes)
-AM_CONDITIONAL(BUILD_SIMPLE_EGL_CLIENTS, test "x$enable_simple_egl_clients" = "xyes" -a "x$enable_egl" = "xyes")
-if test x$enable_simple_egl_clients = xyes -a x$enable_egl = xyes; then
+              enable_simple_egl_clients="$enable_egl")
+AM_CONDITIONAL(BUILD_SIMPLE_EGL_CLIENTS, test "x$enable_simple_egl_clients" = "xyes")
+if test x$enable_simple_egl_clients = xyes; then
   PKG_CHECK_MODULES(SIMPLE_EGL_CLIENT,
                     [egl >= 7.10 glesv2 wayland-client wayland-egl wayland-cursor])
 fi
@@ -424,8 +438,10 @@ if test "x$have_lcms" = xyes; then
 fi
 AM_CONDITIONAL(HAVE_LCMS, [test "x$have_lcms" = xyes])
 
-AC_PATH_PROG([wayland_scanner], [wayland-scanner],
-	     [AC_MSG_ERROR("wayland-scanner is needed to compile weston")])
+AC_PATH_PROG([wayland_scanner], [wayland-scanner])
+if test x$wayland_scanner = x; then
+	AC_MSG_ERROR([wayland-scanner is needed to compile weston])
+fi
 
 AC_CONFIG_FILES([Makefile
 		 shared/Makefile
@@ -478,4 +494,5 @@ AC_MSG_RESULT([
 	LCMS2 Support			${have_lcms}
 	libwebp Support			${have_webp}
 	libunwind Support		${have_libunwind}
+	VA H.264 encoding Support	${have_libva}
 ])

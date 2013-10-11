@@ -47,14 +47,6 @@ struct config_section {
 	void (*done)(void *data);
 };
 
-int
-parse_config_file(int config_fd,
-		  const struct config_section *sections, int num_sections,
-		  void *data);
-
-int
-open_config_file(const char *name);
-
 enum weston_option_type {
 	WESTON_OPTION_INTEGER,
 	WESTON_OPTION_UNSIGNED_INTEGER,
@@ -88,6 +80,10 @@ weston_config_section_get_uint(struct weston_config_section *section,
 			       const char *key,
 			       uint32_t *value, uint32_t default_value);
 int
+weston_config_section_get_double(struct weston_config_section *section,
+				 const char *key,
+				 double *value, double default_value);
+int
 weston_config_section_get_string(struct weston_config_section *section,
 				 const char *key,
 				 char **value,
@@ -97,7 +93,10 @@ weston_config_section_get_bool(struct weston_config_section *section,
 			       const char *key,
 			       int *value, int default_value);
 struct weston_config *
-weston_config_parse(int fd);
+weston_config_parse(const char *name);
+
+const char *
+weston_config_get_full_path(struct weston_config *config);
 
 void
 weston_config_destroy(struct weston_config *config);

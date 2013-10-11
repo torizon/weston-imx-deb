@@ -40,6 +40,7 @@
 #include <cairo-gl.h>
 
 #include <wayland-client.h>
+#define WL_HIDE_DEPRECATED
 #include <wayland-server.h>
 
 #include "window.h"
@@ -136,6 +137,15 @@ redraw_handler(struct widget *widget, void *data)
 	cairo_fill(cr);
 
 	wl_list_for_each(s, &nested->surface_list, link) {
+		display_acquire_window_surface(nested->display,
+					       nested->window, NULL);
+
+		glBindTexture(GL_TEXTURE_2D, s->texture);
+		image_target_texture_2d(GL_TEXTURE_2D, s->image);
+
+		display_release_window_surface(nested->display,
+					       nested->window);
+
 		cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 		cairo_set_source_surface(cr, s->cairo_surface,
 					 allocation.x + 10,
@@ -313,9 +323,6 @@ surface_attach(struct wl_client *client,
 						    surface->texture,
 						    width, height);
 
-	glBindTexture(GL_TEXTURE_2D, surface->texture);
-	image_target_texture_2d(GL_TEXTURE_2D, surface->image);
-
 	window_schedule_redraw(nested->window);
 }
 
@@ -403,13 +410,12 @@ compositor_create_surface(struct wl_client *client,
 	struct nested *nested = wl_resource_get_user_data(resource);
 	struct nested_surface *surface;
 	
-	surface = malloc(sizeof *surface);
+	surface = zalloc(sizeof *surface);
 	if (surface == NULL) {
 		wl_resource_post_no_memory(resource);
 		return;
 	}
 
-	memset(surface, 0, sizeof *surface);
 	surface->nested = nested;
 
 	display_acquire_window_surface(nested->display,
@@ -567,10 +573,9 @@ nested_create(struct display *display)
 {
 	struct nested *nested;
 
-	nested = malloc(sizeof *nested);
+	nested = zalloc(sizeof *nested);
 	if (nested == NULL)
 		return nested;
-	memset(nested, 0, sizeof *nested);
 
 	nested->window = window_create(display);
 	nested->widget = frame_create(nested->window, nested);

@@ -32,7 +32,7 @@
 #include "compositor.h"
 
 struct clipboard_source {
-	struct wl_data_source base;
+	struct weston_data_source base;
 	struct wl_array contents;
 	struct clipboard *clipboard;
 	struct wl_event_source *event_source;
@@ -103,13 +103,13 @@ clipboard_source_data(int fd, uint32_t mask, void *data)
 }
 
 static void
-clipboard_source_accept(struct wl_data_source *source,
+clipboard_source_accept(struct weston_data_source *source,
 			uint32_t time, const char *mime_type)
 {
 }
 
 static void
-clipboard_source_send(struct wl_data_source *base,
+clipboard_source_send(struct weston_data_source *base,
 		      const char *mime_type, int32_t fd)
 {
 	struct clipboard_source *source =
@@ -124,7 +124,7 @@ clipboard_source_send(struct wl_data_source *base,
 }
 
 static void
-clipboard_source_cancel(struct wl_data_source *source)
+clipboard_source_cancel(struct weston_data_source *source)
 {
 }
 
@@ -138,6 +138,9 @@ clipboard_source_create(struct clipboard *clipboard,
 	char **s;
 
 	source = malloc(sizeof *source);
+	if (source == NULL)
+		return NULL;
+
 	wl_array_init(&source->contents);
 	wl_array_init(&source->base.mime_types);
 	source->base.resource = NULL;
@@ -150,13 +153,27 @@ clipboard_source_create(struct clipboard *clipboard,
 	source->serial = serial;
 
 	s = wl_array_add(&source->base.mime_types, sizeof *s);
+	if (s == NULL)
+		goto err_add;
 	*s = strdup(mime_type);
-
+	if (*s == NULL)
+		goto err_strdup;
 	source->event_source =
 		wl_event_loop_add_fd(loop, fd, WL_EVENT_READABLE,
 				     clipboard_source_data, source);
+	if (source->event_source == NULL)
+		goto err_source;
 
 	return source;
+
+ err_source:
+	free(*s);
+ err_strdup:
+	wl_array_release(&source->base.mime_types);
+ err_add:
+	free(source);
+
+	return NULL;
 }
 
 struct clipboard_client {
@@ -213,7 +230,7 @@ clipboard_set_selection(struct wl_listener *listener, void *data)
 	struct clipboard *clipboard =
 		container_of(listener, struct clipboard, selection_listener);
 	struct weston_seat *seat = data;
-	struct wl_data_source *source = seat->selection_data_source;
+	struct weston_data_source *source = seat->selection_data_source;
 	const char **mime_types;
 	int p[2];
 
@@ -266,10 +283,9 @@ clipboard_create(struct weston_seat *seat)
 {
 	struct clipboard *clipboard;
 
-	clipboard = malloc(sizeof *clipboard);
+	clipboard = zalloc(sizeof *clipboard);
 	if (clipboard == NULL)
 		return NULL;
-	memset(clipboard, 0, sizeof *clipboard);
 
 	clipboard->seat = seat;
 	clipboard->selection_listener.notify = clipboard_set_selection;

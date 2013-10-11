@@ -128,6 +128,9 @@ struct display {
 	/* A hack to get text extents for tooltips */
 	cairo_surface_t *dummy_surface;
 	void *dummy_surface_data;
+
+	int has_rgb565;
+	int seat_version;
 };
 
 enum {
@@ -236,6 +239,8 @@ struct window {
 	int resizing;
 	int fullscreen_method;
 	int configure_requests;
+
+	enum preferred_format preferred_format;
 
 	window_key_handler_t key_handler;
 	window_keyboard_focus_handler_t keyboard_focus_handler;
@@ -808,6 +813,7 @@ display_create_shm_surface_from_pool(struct display *display,
 	struct shm_surface_data *data;
 	uint32_t format;
 	cairo_surface_t *surface;
+	cairo_format_t cairo_format;
 	int stride, length, offset;
 	void *map;
 
@@ -815,8 +821,12 @@ display_create_shm_surface_from_pool(struct display *display,
 	if (data == NULL)
 		return NULL;
 
-	stride = cairo_format_stride_for_width (CAIRO_FORMAT_ARGB32,
-						rectangle->width);
+	if (flags & SURFACE_HINT_RGB565 && display->has_rgb565)
+		cairo_format = CAIRO_FORMAT_RGB16_565;
+	else
+		cairo_format = CAIRO_FORMAT_ARGB32;
+
+	stride = cairo_format_stride_for_width (cairo_format, rectangle->width);
 	length = stride * rectangle->height;
 	data->pool = NULL;
 	map = shm_pool_allocate(pool, length, &offset);
@@ -827,7 +837,7 @@ display_create_shm_surface_from_pool(struct display *display,
 	}
 
 	surface = cairo_image_surface_create_for_data (map,
-						       CAIRO_FORMAT_ARGB32,
+						       cairo_format,
 						       rectangle->width,
 						       rectangle->height,
 						       stride);
@@ -835,10 +845,14 @@ display_create_shm_surface_from_pool(struct display *display,
 	cairo_surface_set_user_data(surface, &shm_surface_data_key,
 				    data, shm_surface_data_destroy);
 
-	if (flags & SURFACE_OPAQUE)
-		format = WL_SHM_FORMAT_XRGB8888;
-	else
-		format = WL_SHM_FORMAT_ARGB8888;
+	if (flags & SURFACE_HINT_RGB565 && display->has_rgb565)
+		format = WL_SHM_FORMAT_RGB565;
+	else {
+		if (flags & SURFACE_OPAQUE)
+			format = WL_SHM_FORMAT_XRGB8888;
+		else
+			format = WL_SHM_FORMAT_ARGB8888;
+	}
 
 	data->buffer = wl_shm_pool_create_buffer(pool->pool, offset,
 						 rectangle->width,
@@ -1165,7 +1179,9 @@ shm_surface_create(struct display *display, struct wl_surface *wl_surface,
 	struct shm_surface *surface;
 	DBG_OBJ(wl_surface, "\n");
 
-	surface = calloc(1, sizeof *surface);
+	surface = xmalloc(sizeof *surface);
+	memset(surface, 0, sizeof *surface);
+
 	if (!surface)
 		return NULL;
 
@@ -1291,26 +1307,22 @@ static const struct cursor_alternatives cursors[] = {
 static void
 create_cursors(struct display *display)
 {
-	int config_fd;
+	struct weston_config *config;
+	struct weston_config_section *s;
+	int size;
 	char *theme = NULL;
-	unsigned int size = 32;
 	unsigned int i, j;
 	struct wl_cursor *cursor;
-	struct config_key shell_keys[] = {
-		{ "cursor-theme", CONFIG_KEY_STRING, &theme },
-		{ "cursor-size", CONFIG_KEY_UNSIGNED_INTEGER, &size },
-	};
-	struct config_section cs[] = {
-		{ "shell", shell_keys, ARRAY_LENGTH(shell_keys), NULL },
-	};
 
-	config_fd = open_config_file("weston.ini");
-	parse_config_file(config_fd, cs, ARRAY_LENGTH(cs), NULL);
-	close(config_fd);
+	config = weston_config_parse("weston.ini");
+	s = weston_config_get_section(config, "shell", NULL, NULL);
+	weston_config_section_get_string(s, "cursor-theme", &theme, NULL);
+	weston_config_section_get_int(s, "cursor-size", &size, 32);
+	weston_config_destroy(config);
 
 	display->cursor_theme = wl_cursor_theme_load(theme, size, display->shm);
 	display->cursors =
-		malloc(ARRAY_LENGTH(cursors) * sizeof display->cursors[0]);
+		xmalloc(ARRAY_LENGTH(cursors) * sizeof display->cursors[0]);
 
 	for (i = 0; i < ARRAY_LENGTH(cursors); i++) {
 		cursor = NULL;
@@ -1438,6 +1450,9 @@ window_create_main_surface(struct window *window)
 
 	if (window->resizing)
 		flags |= SURFACE_HINT_RESIZE;
+
+	if (window->preferred_format == WINDOW_PREFERRED_FORMAT_RGB565)
+		flags |= SURFACE_HINT_RGB565;
 
 	if (window->resize_edges & WINDOW_RESIZING_LEFT)
 		dx = surface->server_allocation.width -
@@ -1606,8 +1621,7 @@ widget_create(struct window *window, struct surface *surface, void *data)
 {
 	struct widget *widget;
 
-	widget = malloc(sizeof *widget);
-	memset(widget, 0, sizeof *widget);
+	widget = xzalloc(sizeof *widget);
 	widget->window = window;
 	widget->surface = surface;
 	widget->user_data = data;
@@ -2452,9 +2466,7 @@ frame_button_create(struct frame *frame, void *data, enum frame_button_action ty
 	struct frame_button *frame_button;
 	const char *icon = data;
 
-	frame_button = malloc (sizeof *frame_button);
-	memset(frame_button, 0, sizeof *frame_button);
-
+	frame_button = xzalloc (sizeof *frame_button);
 	frame_button->icon = cairo_image_surface_create_from_png(icon);
 	frame_button->widget = widget_add_widget(frame->widget, frame_button);
 	frame_button->frame = frame;
@@ -2697,9 +2709,7 @@ frame_create(struct window *window, void *data)
 {
 	struct frame *frame;
 
-	frame = malloc(sizeof *frame);
-	memset(frame, 0, sizeof *frame);
-
+	frame = xzalloc(sizeof *frame);
 	frame->widget = window_add_widget(window, frame);
 	frame->child = widget_add_widget(frame->widget, data);
 
@@ -2891,18 +2901,18 @@ pointer_handle_motion(void *data, struct wl_pointer *pointer,
 	float sx = wl_fixed_to_double(sx_w);
 	float sy = wl_fixed_to_double(sy_w);
 
+	input->sx = sx;
+	input->sy = sy;
+
+	if (!window)
+		return;
+
 	/* when making the window smaller - e.g. after a unmaximise we might
 	 * still have a pending motion event that the compositor has picked
 	 * based on the old surface dimensions
 	 */
 	if (sx > window->main_surface->allocation.width ||
 	    sy > window->main_surface->allocation.height)
-		return;
-
-	input->sx = sx;
-	input->sy = sy;
-
-	if (!window)
 		return;
 
 	if (!(input->grab && input->grab_button)) {
@@ -2914,12 +2924,15 @@ pointer_handle_motion(void *data, struct wl_pointer *pointer,
 		widget = input->grab;
 	else
 		widget = input->focus_widget;
-	if (widget && widget->motion_handler)
-		cursor = widget->motion_handler(input->focus_widget,
-						input, time, sx, sy,
-						widget->user_data);
-	else
-		cursor = input->focus_widget->default_cursor;
+	if (widget) {
+		if (widget->motion_handler)
+			cursor = widget->motion_handler(input->focus_widget,
+							input, time, sx, sy,
+							widget->user_data);
+		else
+			cursor = widget->default_cursor;
+	} else
+		cursor = CURSOR_LEFT_PTR;
 
 	input_set_pointer_image(input, cursor);
 }
@@ -3379,8 +3392,16 @@ seat_handle_capabilities(void *data, struct wl_seat *seat,
 	}
 }
 
+static void
+seat_handle_name(void *data, struct wl_seat *seat,
+		 const char *name)
+{
+
+}
+
 static const struct wl_seat_listener seat_listener = {
 	seat_handle_capabilities,
+	seat_handle_name
 };
 
 void
@@ -3463,7 +3484,7 @@ data_device_data_offer(void *data,
 {
 	struct data_offer *offer;
 
-	offer = malloc(sizeof *offer);
+	offer = xmalloc(sizeof *offer);
 
 	wl_array_init(&offer->types);
 	offer->refcount = 1;
@@ -3769,6 +3790,16 @@ input_receive_drag_data(struct input *input, const char *mime_type,
 	data_offer_receive_data(input->drag_offer, mime_type, func, data);
 	input->drag_offer->x = input->sx;
 	input->drag_offer->y = input->sy;
+}
+
+int
+input_receive_drag_data_to_fd(struct input *input,
+			      const char *mime_type, int fd)
+{
+	if (input->drag_offer)
+		wl_data_offer_receive(input->drag_offer->offer, mime_type, fd);
+
+	return 0;
 }
 
 int
@@ -4382,7 +4413,7 @@ surface_enter(void *data,
 	if (!output_found)
 		return;
 
-	window_output = malloc (sizeof *window_output);
+	window_output = xmalloc(sizeof *window_output);
 	window_output->output = output_found;
 
 	wl_list_insert (&window->window_output_list, &window_output->link);
@@ -4429,7 +4460,8 @@ surface_create(struct window *window)
 	struct display *display = window->display;
 	struct surface *surface;
 
-	surface = calloc(1, sizeof *surface);
+	surface = xmalloc(sizeof *surface);
+	memset(surface, 0, sizeof *surface);
 	if (!surface)
 		return NULL;
 
@@ -4450,8 +4482,7 @@ window_create_internal(struct display *display,
 	struct window *window;
 	struct surface *surface;
 
-	window = xmalloc(sizeof *window);
-	memset(window, 0, sizeof *window);
+	window = xzalloc(sizeof *window);
 	wl_list_init(&window->subsurface_list);
 	window->display = display;
 	window->parent = parent;
@@ -4469,6 +4500,7 @@ window_create_internal(struct display *display,
 	window->type = type;
 	window->fullscreen_method = WL_SHELL_SURFACE_FULLSCREEN_METHOD_DEFAULT;
 	window->configure_requests = 0;
+	window->preferred_format = WINDOW_PREFERRED_FORMAT_NONE;
 
 	if (display->argb_device)
 #ifdef HAVE_CAIRO_EGL
@@ -4497,13 +4529,7 @@ window_create_internal(struct display *display,
 struct window *
 window_create(struct display *display)
 {
-	struct window *window;
-
-	window = window_create_internal(display, NULL, TYPE_NONE);
-	if (!window)
-		return NULL;
-
-	return window;
+	return window_create_internal(display, NULL, TYPE_NONE);
 }
 
 struct window *
@@ -4698,6 +4724,13 @@ window_set_buffer_type(struct window *window, enum window_buffer_type type)
 	window->main_surface->buffer_type = type;
 }
 
+void
+window_set_preferred_format(struct window *window,
+			    enum preferred_format format)
+{
+	window->preferred_format = format;
+}
+
 struct widget *
 window_add_subsurface(struct window *window, void *data,
 		      enum subsurface_mode default_mode)
@@ -4706,9 +4739,6 @@ window_add_subsurface(struct window *window, void *data,
 	struct surface *surface;
 	struct wl_surface *parent;
 	struct wl_subcompositor *subcompo = window->display->subcompositor;
-
-	if (!subcompo)
-		return NULL;
 
 	surface = surface_create(window);
 	widget = widget_create(window, surface, data);
@@ -4801,11 +4831,7 @@ display_add_output(struct display *d, uint32_t id)
 {
 	struct output *output;
 
-	output = malloc(sizeof *output);
-	if (output == NULL)
-		return;
-
-	memset(output, 0, sizeof *output);
+	output = xzalloc(sizeof *output);
 	output->display = d;
 	output->scale = 1;
 	output->output =
@@ -4926,18 +4952,17 @@ fini_xkb(struct input *input)
 	xkb_map_unref(input->xkb.keymap);
 }
 
+#define MAX(a,b) ((a) > (b) ? a : b)
+
 static void
 display_add_input(struct display *d, uint32_t id)
 {
 	struct input *input;
 
-	input = malloc(sizeof *input);
-	if (input == NULL)
-		return;
-
-	memset(input, 0, sizeof *input);
+	input = xzalloc(sizeof *input);
 	input->display = d;
-	input->seat = wl_registry_bind(d->registry, id, &wl_seat_interface, 1);
+	input->seat = wl_registry_bind(d->registry, id, &wl_seat_interface,
+				       MAX(d->seat_version, 3));
 	input->touch_focus = NULL;
 	input->pointer_focus = NULL;
 	input->keyboard_focus = NULL;
@@ -4975,6 +5000,14 @@ input_destroy(struct input *input)
 		data_offer_destroy(input->selection_offer);
 
 	wl_data_device_destroy(input->data_device);
+
+	if (input->display->seat_version >= 3) {
+		if (input->pointer)
+			wl_pointer_release(input->pointer);
+		if (input->keyboard)
+			wl_keyboard_release(input->keyboard);
+	}
+
 	fini_xkb(input);
 
 	wl_surface_destroy(input->pointer_surface);
@@ -4998,13 +5031,26 @@ init_workspace_manager(struct display *d, uint32_t id)
 }
 
 static void
+shm_format(void *data, struct wl_shm *wl_shm, uint32_t format)
+{
+	struct display *d = data;
+
+	if (format == WL_SHM_FORMAT_RGB565)
+		d->has_rgb565 = 1;
+}
+
+struct wl_shm_listener shm_listener = {
+	shm_format
+};
+
+static void
 registry_handle_global(void *data, struct wl_registry *registry, uint32_t id,
 		       const char *interface, uint32_t version)
 {
 	struct display *d = data;
 	struct global *global;
 
-	global = malloc(sizeof *global);
+	global = xmalloc(sizeof *global);
 	global->name = id;
 	global->interface = strdup(interface);
 	global->version = version;
@@ -5016,12 +5062,14 @@ registry_handle_global(void *data, struct wl_registry *registry, uint32_t id,
 	} else if (strcmp(interface, "wl_output") == 0) {
 		display_add_output(d, id);
 	} else if (strcmp(interface, "wl_seat") == 0) {
+		d->seat_version = version;
 		display_add_input(d, id);
 	} else if (strcmp(interface, "wl_shell") == 0) {
 		d->shell = wl_registry_bind(registry,
 					    id, &wl_shell_interface, 1);
 	} else if (strcmp(interface, "wl_shm") == 0) {
 		d->shm = wl_registry_bind(registry, id, &wl_shm_interface, 1);
+		wl_shm_add_listener(d->shm, &shm_listener, d);
 	} else if (strcmp(interface, "wl_data_device_manager") == 0) {
 		d->data_device_manager =
 			wl_registry_bind(registry, id,
@@ -5220,11 +5268,9 @@ display_create(int *argc, char *argv[])
 
 	wl_log_set_handler_client(log_handler);
 
-	d = malloc(sizeof *d);
+	d = zalloc(sizeof *d);
 	if (d == NULL)
 		return NULL;
-
-        memset(d, 0, sizeof *d);
 
 	d->display = wl_display_connect(NULL);
 	if (d->display == NULL) {
@@ -5366,6 +5412,17 @@ struct wl_display *
 display_get_display(struct display *display)
 {
 	return display->display;
+}
+
+int
+display_has_subcompositor(struct display *display)
+{
+	if (display->subcompositor)
+		return 1;
+
+	wl_display_roundtrip(display->display);
+
+	return display->subcompositor != NULL;
 }
 
 cairo_device_t *
@@ -5562,7 +5619,7 @@ void *
 fail_on_null(void *p)
 {
 	if (p == NULL) {
-		fprintf(stderr, "wayland-scanner: out of memory\n");
+		fprintf(stderr, "%s: out of memory\n", program_invocation_short_name);
 		exit(EXIT_FAILURE);
 	}
 
@@ -5573,6 +5630,12 @@ void *
 xmalloc(size_t s)
 {
 	return fail_on_null(malloc(s));
+}
+
+void *
+xzalloc(size_t s)
+{
+	return fail_on_null(zalloc(s));
 }
 
 char *

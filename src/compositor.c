@@ -52,7 +52,6 @@
 #include <libunwind.h>
 #endif
 
-#include <wayland-server.h>
 #include "compositor.h"
 #include "subsurface-server-protocol.h"
 #include "../shared/os-compatibility.h"
@@ -97,26 +96,82 @@ static void
 weston_compositor_build_surface_list(struct weston_compositor *compositor);
 
 WL_EXPORT int
-weston_output_switch_mode(struct weston_output *output, struct weston_mode *mode, int32_t scale)
+weston_output_switch_mode(struct weston_output *output, struct weston_mode *mode,
+		int32_t scale, enum weston_mode_switch_op op)
 {
 	struct weston_seat *seat;
+	struct wl_resource *resource;
 	pixman_region32_t old_output_region;
-	int ret;
+	int ret, notify_mode_changed, notify_scale_changed;
+	int temporary_mode, temporary_scale;
 
 	if (!output->switch_mode)
 		return -1;
 
-	ret = output->switch_mode(output, mode);
-	if (ret < 0)
-		return ret;
+	temporary_mode = (output->original_mode != 0);
+	temporary_scale = (output->current_scale != output->original_scale);
+	ret = 0;
 
-        output->scale = scale;
+	notify_mode_changed = 0;
+	notify_scale_changed = 0;
+	switch(op) {
+	case WESTON_MODE_SWITCH_SET_NATIVE:
+		output->native_mode = mode;
+		if (!temporary_mode) {
+			notify_mode_changed = 1;
+			ret = output->switch_mode(output, mode);
+			if (ret < 0)
+				return ret;
+		}
+
+		output->native_scale = scale;
+		if(!temporary_scale)
+			notify_scale_changed = 1;
+		break;
+	case WESTON_MODE_SWITCH_SET_TEMPORARY:
+		if (!temporary_mode)
+			output->original_mode = output->native_mode;
+		if (!temporary_scale)
+			output->original_scale = output->native_scale;
+
+		ret = output->switch_mode(output, mode);
+		if (ret < 0)
+			return ret;
+
+		output->current_mode = mode;
+		output->current_scale = scale;
+		break;
+	case WESTON_MODE_SWITCH_RESTORE_NATIVE:
+		if (!temporary_mode) {
+			weston_log("already in the native mode\n");
+			return -1;
+		}
+
+		notify_mode_changed = (output->original_mode != output->native_mode);
+
+		ret = output->switch_mode(output, mode);
+		if (ret < 0)
+			return ret;
+
+		if (output->original_scale != output->native_scale) {
+			notify_scale_changed = 1;
+			scale = output->native_scale;
+			output->original_scale = scale;
+		}
+		output->original_mode = 0;
+
+		output->current_scale = output->native_scale;
+		break;
+	default:
+		weston_log("unknown weston_switch_mode_op %d\n", op);
+		break;
+	}
 
 	pixman_region32_init(&old_output_region);
 	pixman_region32_copy(&old_output_region, &output->region);
 
 	/* Update output region and transformation matrix */
-	weston_output_transform_scale_init(output, output->transform, output->scale);
+	weston_output_transform_scale_init(output, output->transform, output->current_scale);
 
 	pixman_region32_init(&output->previous_damage);
 	pixman_region32_init_rect(&output->region, output->x, output->y,
@@ -153,6 +208,25 @@ weston_output_switch_mode(struct weston_output *output, struct weston_mode *mode
 
 	pixman_region32_fini(&old_output_region);
 
+	/* notify clients of the changes */
+	if (notify_mode_changed || notify_scale_changed) {
+		wl_resource_for_each(resource, &output->resource_list) {
+			if(notify_mode_changed) {
+				wl_output_send_mode(resource,
+						mode->flags | WL_OUTPUT_MODE_CURRENT,
+						mode->width,
+						mode->height,
+						mode->refresh);
+			}
+
+			if (notify_scale_changed)
+				wl_output_send_scale(resource, scale);
+
+			if (wl_resource_get_version(resource) >= 2)
+				   wl_output_send_done(resource);
+		}
+	}
+
 	return ret;
 }
 
@@ -173,8 +247,11 @@ child_client_exec(int sockfd, const char *path)
 	sigfillset(&allsigs);
 	sigprocmask(SIG_UNBLOCK, &allsigs, NULL);
 
-	/* Launch clients as the user. */
-	seteuid(getuid());
+	/* Launch clients as the user. Do not lauch clients with wrong euid.*/
+	if (seteuid(getuid()) == -1) {
+		weston_log("compositor: failed seteuid\n");
+		return;
+	}
 
 	/* SOCK_CLOEXEC closes both ends, so we dup the fd to get a
 	 * non-CLOEXEC fd to pass through exec. */
@@ -288,6 +365,7 @@ weston_surface_create(struct weston_compositor *compositor)
 
 	surface->compositor = compositor;
 	surface->alpha = 1.0;
+	surface->ref_count = 1;
 
 	if (compositor->renderer->create_surface(surface) < 0) {
 		free(surface);
@@ -979,6 +1057,8 @@ weston_surface_unmap(struct weston_surface *surface)
 	weston_surface_damage_below(surface);
 	surface->output = NULL;
 	wl_list_remove(&surface->layer_link);
+	wl_list_remove(&surface->link);
+	wl_list_init(&surface->link);
 
 	wl_list_for_each(seat, &surface->compositor->seat_list, link) {
 		if (seat->keyboard && seat->keyboard->focus == surface)
@@ -1004,19 +1084,20 @@ struct weston_frame_callback {
 WL_EXPORT void
 weston_surface_destroy(struct weston_surface *surface)
 {
-	wl_signal_emit(&surface->destroy_signal, &surface->resource);
-
 	struct weston_compositor *compositor = surface->compositor;
 	struct weston_frame_callback *cb, *next;
+
+	if (--surface->ref_count > 0)
+		return;
+
+	wl_signal_emit(&surface->destroy_signal, &surface->resource);
 
 	assert(wl_list_empty(&surface->geometry.child_list));
 	assert(wl_list_empty(&surface->subsurface_list_pending));
 	assert(wl_list_empty(&surface->subsurface_list));
 
-	if (weston_surface_is_mapped(surface)) {
+	if (weston_surface_is_mapped(surface))
 		weston_surface_unmap(surface);
-		weston_compositor_build_surface_list(compositor);
-	}
 
 	wl_list_for_each_safe(cb, next,
 			      &surface->pending.frame_callback_list, link)
@@ -1074,19 +1155,19 @@ weston_buffer_from_resource(struct wl_resource *resource)
 	listener = wl_resource_get_destroy_listener(resource,
 						    weston_buffer_destroy_handler);
 
-	if (listener) {
-		buffer = container_of(listener, struct weston_buffer,
-				      destroy_listener);
-	} else {
-		buffer = malloc(sizeof *buffer);
-		memset(buffer, 0, sizeof *buffer);
+	if (listener)
+		return container_of(listener, struct weston_buffer,
+				    destroy_listener);
 
-		buffer->resource = resource;
-		wl_signal_init(&buffer->destroy_signal);
-		buffer->destroy_listener.notify = weston_buffer_destroy_handler;
-		wl_resource_add_destroy_listener(resource,
-						 &buffer->destroy_listener);
-	}
+	buffer = zalloc(sizeof *buffer);
+	if (buffer == NULL)
+		return NULL;
+
+	buffer->resource = resource;
+	wl_signal_init(&buffer->destroy_signal);
+	buffer->destroy_listener.notify = weston_buffer_destroy_handler;
+	buffer->y_inverted = 1;
+	wl_resource_add_destroy_listener(resource, &buffer->destroy_listener);
 	
 	return buffer;
 }
@@ -1440,8 +1521,13 @@ surface_attach(struct wl_client *client,
 	struct weston_surface *surface = wl_resource_get_user_data(resource);
 	struct weston_buffer *buffer = NULL;
 
-	if (buffer_resource)
+	if (buffer_resource) {
 		buffer = weston_buffer_from_resource(buffer_resource);
+		if (buffer == NULL) {
+			wl_client_post_no_memory(client);
+			return;
+		}
+	}
 
 	/* Attach, attach, without commit in between does not send
 	 * wl_buffer.release. */
@@ -1866,7 +1952,7 @@ weston_subsurface_commit_to_cache(struct weston_subsurface *sub)
 	 * If this commit would cause the surface to move by the
 	 * attach(dx, dy) parameters, the old damage region must be
 	 * translated to correspond to the new surface coordinate system
-	 * origin.
+	 * original_mode.
 	 */
 	pixman_region32_translate(&sub->cached.damage,
 				  -surface->pending.sx, -surface->pending.sy);
@@ -2456,7 +2542,14 @@ weston_compositor_dpms(struct weston_compositor *compositor,
 WL_EXPORT void
 weston_compositor_wake(struct weston_compositor *compositor)
 {
-	switch (compositor->state) {
+	uint32_t old_state = compositor->state;
+
+	/* The state needs to be changed before emitting the wake
+	 * signal because that may try to schedule a repaint which
+	 * will not work if the compositor is still sleeping */
+	compositor->state = WESTON_COMPOSITOR_ACTIVE;
+
+	switch (old_state) {
 	case WESTON_COMPOSITOR_SLEEPING:
 		weston_compositor_dpms(compositor, WESTON_DPMS_ON);
 		/* fall through */
@@ -2465,7 +2558,6 @@ weston_compositor_wake(struct weston_compositor *compositor)
 		wl_signal_emit(&compositor->wake_signal, compositor);
 		/* fall through */
 	default:
-		compositor->state = WESTON_COMPOSITOR_ACTIVE;
 		wl_event_source_timer_update(compositor->idle_source,
 					     compositor->idle_time * 1000);
 	}
@@ -2577,7 +2669,7 @@ bind_output(struct wl_client *client,
 				output->transform);
 	if (version >= 2)
 		wl_output_send_scale(resource,
-				     output->scale);
+				     output->current_scale);
 
 	wl_list_for_each (mode, &output->mode_list, link) {
 		wl_output_send_mode(resource,
@@ -2706,21 +2798,21 @@ weston_output_transform_scale_init(struct weston_output *output, uint32_t transf
 	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
 	case WL_OUTPUT_TRANSFORM_FLIPPED_270:
 		/* Swap width and height */
-		output->width = output->current->height;
-		output->height = output->current->width;
+		output->width = output->current_mode->height;
+		output->height = output->current_mode->width;
 		break;
 	case WL_OUTPUT_TRANSFORM_NORMAL:
 	case WL_OUTPUT_TRANSFORM_180:
 	case WL_OUTPUT_TRANSFORM_FLIPPED:
 	case WL_OUTPUT_TRANSFORM_FLIPPED_180:
-		output->width = output->current->width;
-		output->height = output->current->height;
+		output->width = output->current_mode->width;
+		output->height = output->current_mode->height;
 		break;
 	default:
 		break;
 	}
 
-        output->scale = scale;
+	output->native_scale = output->current_scale = scale;
 	output->width /= scale;
 	output->height /= scale;
 }
@@ -2752,7 +2844,7 @@ weston_output_init(struct weston_output *output, struct weston_compositor *c,
 	output->mm_width = mm_width;
 	output->mm_height = mm_height;
 	output->dirty = 1;
-	output->origin_scale = scale;
+	output->original_scale = scale;
 
 	weston_output_transform_scale_init(output, transform, scale);
 	weston_output_init_zoom(output);
@@ -2782,8 +2874,8 @@ weston_output_transform_coordinate(struct weston_output *output,
 	wl_fixed_t tx, ty;
 	wl_fixed_t width, height;
 
-	width = wl_fixed_from_int(output->width * output->scale - 1);
-	height = wl_fixed_from_int(output->height * output->scale - 1);
+	width = wl_fixed_from_int(output->width * output->current_scale - 1);
+	height = wl_fixed_from_int(output->height * output->current_scale - 1);
 
 	switch(output->transform) {
 	case WL_OUTPUT_TRANSFORM_NORMAL:
@@ -2821,8 +2913,8 @@ weston_output_transform_coordinate(struct weston_output *output,
 		break;
 	}
 
-	*x = tx / output->scale + wl_fixed_from_int(output->x);
-	*y = ty / output->scale + wl_fixed_from_int(output->y);
+	*x = tx / output->current_scale + wl_fixed_from_int(output->x);
+	*y = ty / output->current_scale + wl_fixed_from_int(output->y);
 }
 
 static void
@@ -2900,7 +2992,8 @@ weston_compositor_init(struct weston_compositor *ec,
 	wl_signal_init(&ec->update_input_panel_signal);
 	wl_signal_init(&ec->seat_created_signal);
 	wl_signal_init(&ec->output_created_signal);
-	ec->launcher_sock = weston_environment_get_fd("WESTON_LAUNCHER_SOCK");
+	wl_signal_init(&ec->session_signal);
+	ec->session_active = 1;
 
 	ec->output_id_pool = 0;
 
@@ -3250,6 +3343,7 @@ usage(int error_code)
 		"  -B, --backend=MODULE\tBackend module, one of drm-backend.so,\n"
 		"\t\t\t\tfbdev-backend.so, x11-backend.so or\n"
 		"\t\t\t\twayland-backend.so\n"
+		"  --shell=MODULE\tShell module, defaults to desktop-shell.so\n"
 		"  -S, --socket=NAME\tName of socket to listen on\n"
 		"  -i, --idle-time=SECS\tIdle time in seconds\n"
 		"  --modules\t\tLoad the comma-separated list of modules\n"
@@ -3335,8 +3429,9 @@ int main(int argc, char *argv[])
 		*(*backend_init)(struct wl_display *display,
 				 int *argc, char *argv[],
 				 struct weston_config *config);
-	int i, config_fd;
+	int i;
 	char *backend = NULL;
+	char *shell = NULL;
 	char *modules, *option_modules = NULL;
 	char *log = NULL;
 	int32_t idle_time = 300;
@@ -3348,6 +3443,7 @@ int main(int argc, char *argv[])
 
 	const struct weston_option core_options[] = {
 		{ WESTON_OPTION_STRING, "backend", 'B', &backend },
+		{ WESTON_OPTION_STRING, "shell", 0, &shell },
 		{ WESTON_OPTION_STRING, "socket", 'S', &socket_name },
 		{ WESTON_OPTION_INTEGER, "idle-time", 'i', &idle_time },
 		{ WESTON_OPTION_STRING, "modules", 0, &option_modules },
@@ -3401,13 +3497,15 @@ int main(int argc, char *argv[])
 			backend = WESTON_NATIVE_BACKEND;
 	}
 
-	config_fd = open_config_file("weston.ini");
-	config = weston_config_parse(config_fd);
-	close(config_fd);
-
+	config = weston_config_parse("weston.ini");
+	if (config != NULL) {
+		weston_log("Using config file '%s'\n",
+			   weston_config_get_full_path(config));
+	} else {
+		weston_log("Starting with no config file.\n");
+	}
 	section = weston_config_get_section(config, "core", NULL, NULL);
-	weston_config_section_get_string(section, "modules",
-					 &modules, "desktop-shell.so");
+	weston_config_section_get_string(section, "modules", &modules, "");
 
 	backend_init = load_module(backend, "backend_init");
 	if (!backend_init)
@@ -3425,6 +3523,12 @@ int main(int argc, char *argv[])
 	ec->idle_time = idle_time;
 
 	setenv("WAYLAND_DISPLAY", socket_name, 1);
+
+	if (!shell)
+		weston_config_section_get_string(section, "shell", &shell,
+						 "desktop-shell.so");
+	if (load_modules(ec, shell, &argc, argv) < 0)
+		goto out;
 
 	if (load_modules(ec, modules, &argc, argv) < 0)
 		goto out;

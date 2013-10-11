@@ -384,7 +384,7 @@ resize_handler(struct widget *widget,
 static char *
 insert_text(const char *text, uint32_t offset, const char *insert)
 {
-	char *new_text = malloc(strlen(text) + strlen(insert) + 1);
+	char *new_text = xmalloc(strlen(text) + strlen(insert) + 1);
 
 	strncat(new_text, text, offset);
 	new_text[offset] = '\0';
@@ -456,16 +456,6 @@ prev_utf8_char(const char *s, const char *p)
 	return NULL;
 }
 
-static const char *
-next_utf8_char(const char *p)
-{
-	if (*p == '\0')
-		return NULL;
-	for (++p; (*p & 0xc0) == 0x80; ++p)
-		;
-	return p;
-}
-
 static void
 delete_before_cursor(struct virtual_keyboard *keyboard)
 {
@@ -483,7 +473,7 @@ delete_before_cursor(struct virtual_keyboard *keyboard)
 		return;
 	}
 
-	end = next_utf8_char(start);
+	end = keyboard->surrounding_text + keyboard->surrounding_cursor;
 
 	wl_input_method_context_delete_surrounding_text(keyboard->context,
 							(start - keyboard->surrounding_text) - keyboard->surrounding_cursor,
@@ -632,6 +622,46 @@ button_handler(struct widget *widget,
 	}
 
 	widget_schedule_redraw(widget);
+}
+
+static void
+touch_down_handler(struct widget *widget, struct input *input,
+		   uint32_t serial, uint32_t time, int32_t id,
+		   float x, float y, void *data)
+{
+
+	struct keyboard *keyboard = data;
+	struct rectangle allocation;
+	int row, col;
+	unsigned int i;
+	const struct layout *layout;
+
+	layout = get_current_layout(keyboard->keyboard);
+
+	widget_get_allocation(keyboard->widget, &allocation);
+
+	x -= allocation.x;
+	y -= allocation.y;
+
+	row = (int)y / key_height;
+	col = (int)x / key_width + row * layout->columns;
+	for (i = 0; i < layout->count; ++i) {
+		col -= layout->keys[i].width;
+		if (col < 0) {
+			keyboard_handle_key(keyboard, time, &layout->keys[i], input, WL_POINTER_BUTTON_STATE_PRESSED);
+			break;
+		}
+	}
+
+	widget_schedule_redraw(widget);
+}
+
+static void
+touch_up_handler(struct widget *widget, struct input *input,
+				uint32_t serial, uint32_t time, int32_t id,
+				void *data)
+{
+
 }
 
 static void
@@ -836,9 +866,7 @@ keyboard_create(struct output *output, struct virtual_keyboard *virtual_keyboard
 
 	layout = get_current_layout(virtual_keyboard);
 
-	keyboard = malloc(sizeof *keyboard);
-	memset(keyboard, 0, sizeof *keyboard);
-
+	keyboard = xzalloc(sizeof *keyboard);
 	keyboard->keyboard = virtual_keyboard;
 	keyboard->window = window_create_custom(virtual_keyboard->display);
 	keyboard->widget = window_add_widget(keyboard->window, keyboard);
@@ -851,6 +879,9 @@ keyboard_create(struct output *output, struct virtual_keyboard *virtual_keyboard
 	widget_set_redraw_handler(keyboard->widget, redraw_handler);
 	widget_set_resize_handler(keyboard->widget, resize_handler);
 	widget_set_button_handler(keyboard->widget, button_handler);
+	widget_set_touch_down_handler(keyboard->widget, touch_down_handler);
+	widget_set_touch_up_handler(keyboard->widget, touch_up_handler);
+
 
 	window_schedule_resize(keyboard->window,
 			       layout->columns * key_width,

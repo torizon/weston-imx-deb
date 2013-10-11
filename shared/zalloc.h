@@ -1,5 +1,5 @@
 /*
- * Copyright © 2012 Benjamin Franzke
+ * Copyright © 2013 Red Hat, Inc.
  *
  * Permission to use, copy, modify, distribute, and sell this software and
  * its documentation for any purpose is hereby granted without fee, provided
@@ -20,29 +20,23 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _WESTON_LAUNCHER_UTIL_H_
-#define _WESTON_LAUNCHER_UTIL_H_
+#ifndef WESTON_ZALLOC_H
+#define WESTON_ZALLOC_H
 
-#include "config.h"
-
-#include "compositor.h"
-
-struct weston_launcher;
-
-struct weston_launcher *
-weston_launcher_connect(struct weston_compositor *compositor, int tty);
-
-void
-weston_launcher_destroy(struct weston_launcher *launcher);
-
-int
-weston_launcher_open(struct weston_launcher *launcher,
-		     const char *path, int flags);
-
-int
-weston_launcher_activate_vt(struct weston_launcher *launcher, int vt);
-
-void
-weston_launcher_restore(struct weston_launcher *launcher);
-
+#ifdef  __cplusplus
+extern "C" {
 #endif
+
+#include <stdlib.h>
+
+static inline void *
+zalloc(size_t size)
+{
+	return calloc(1, size);
+}
+
+#ifdef  __cplusplus
+}
+#endif
+
+#endif /* WESTON_ZALLOC_H */

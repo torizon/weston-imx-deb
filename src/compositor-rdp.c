@@ -369,12 +369,13 @@ rdp_switch_mode(struct weston_output *output, struct weston_mode *target_mode) {
 		return -ENOENT;
 	}
 
-	if(local_mode == output->current)
+	if(local_mode == output->current_mode)
 		return 0;
 
-	output->current->flags = 0;
-	output->current = local_mode;
-	output->current->flags = WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED;
+	output->current_mode->flags &= ~WL_OUTPUT_MODE_CURRENT;
+
+	output->current_mode = local_mode;
+	output->current_mode->flags |= WL_OUTPUT_MODE_CURRENT;
 
 	pixman_renderer_output_destroy(output);
 	pixman_renderer_output_create(output);
@@ -445,10 +446,9 @@ rdp_compositor_create_output(struct rdp_compositor *c, int width, int height,
 	struct wl_event_loop *loop;
 	struct weston_mode *currentMode, *next;
 
-	output = malloc(sizeof *output);
+	output = zalloc(sizeof *output);
 	if (output == NULL)
 		return -1;
-	memset(output, 0, sizeof *output);
 
 	wl_list_init(&output->peers);
 	wl_list_init(&output->base.mode_list);
@@ -467,7 +467,7 @@ rdp_compositor_create_output(struct rdp_compositor *c, int width, int height,
 		goto out_free_output_and_modes;
 	}
 
-	output->base.current = currentMode;
+	output->base.current_mode = output->base.native_mode = currentMode;
 	weston_output_init(&output->base, &c->base, 0, 0, width, height,
 			   WL_OUTPUT_TRANSFORM_NORMAL, 1);
 
@@ -490,7 +490,6 @@ rdp_compositor_create_output(struct rdp_compositor *c, int width, int height,
 	loop = wl_display_get_event_loop(c->base.wl_display);
 	output->finish_frame_timer = wl_event_loop_add_timer(loop, finish_frame_handler, output);
 
-	output->base.origin = output->base.current;
 	output->base.start_repaint_loop = rdp_output_start_repaint_loop;
 	output->base.repaint = rdp_output_repaint;
 	output->base.destroy = rdp_output_destroy;
@@ -680,23 +679,26 @@ xf_peer_post_connect(freerdp_peer* client)
 	output = c->output;
 	settings = client->settings;
 
-	if(!settings->SurfaceCommandsEnabled) {
+	if (!settings->SurfaceCommandsEnabled) {
 		weston_log("client doesn't support required SurfaceCommands\n");
 		return FALSE;
 	}
 
-	if(output->base.width != (int)settings->DesktopWidth ||
+	if (output->base.width != (int)settings->DesktopWidth ||
 			output->base.height != (int)settings->DesktopHeight)
 	{
-		if(!settings->DesktopResize) {
-			weston_log("client don't support desktopResize()\n");
+		struct weston_mode new_mode;
+		struct weston_mode *target_mode;
+		new_mode.width = (int)settings->DesktopWidth;
+		new_mode.height = (int)settings->DesktopHeight;
+		target_mode = find_matching_mode(&output->base, &new_mode);
+		if (!target_mode) {
+			weston_log("client mode not found\n");
 			return FALSE;
 		}
-
-		/* force the client size */
-		settings->DesktopWidth = output->base.width;
-		settings->DesktopHeight = output->base.height;
-		client->update->DesktopResize(client->context);
+		weston_output_switch_mode(&output->base, target_mode, 1, WESTON_MODE_SWITCH_SET_NATIVE);
+		output->base.width = new_mode.width;
+		output->base.height = new_mode.height;
 	}
 
 	weston_log("kbd_layout:%x kbd_type:%x kbd_subType:%x kbd_functionKeys:%x\n",
@@ -991,11 +993,9 @@ rdp_compositor_create(struct wl_display *display,
 	char *fd_str;
 	int fd;
 
-	c = malloc(sizeof *c);
+	c = zalloc(sizeof *c);
 	if (c == NULL)
 		return NULL;
-
-	memset(c, 0, sizeof *c);
 
 	if (weston_compositor_init(&c->base, display, argc, argv, wconfig) < 0)
 		goto err_free;

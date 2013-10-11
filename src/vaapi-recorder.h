@@ -1,5 +1,5 @@
 /*
- * Copyright © 2012 Benjamin Franzke
+ * Copyright © 2013 Intel Corporation
  *
  * Permission to use, copy, modify, distribute, and sell this software and
  * its documentation for any purpose is hereby granted without fee, provided
@@ -20,29 +20,16 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef _WESTON_LAUNCHER_UTIL_H_
-#define _WESTON_LAUNCHER_UTIL_H_
+#ifndef _VAAPI_RECORDER_H_
+#define _VAAPI_RECORDER_H_
 
-#include "config.h"
+struct vaapi_recorder;
 
-#include "compositor.h"
-
-struct weston_launcher;
-
-struct weston_launcher *
-weston_launcher_connect(struct weston_compositor *compositor, int tty);
-
+struct vaapi_recorder *
+vaapi_recorder_create(int drm_fd, int width, int height, const char *filename);
 void
-weston_launcher_destroy(struct weston_launcher *launcher);
-
-int
-weston_launcher_open(struct weston_launcher *launcher,
-		     const char *path, int flags);
-
-int
-weston_launcher_activate_vt(struct weston_launcher *launcher, int vt);
-
+vaapi_recorder_destroy(struct vaapi_recorder *r);
 void
-weston_launcher_restore(struct weston_launcher *launcher);
+vaapi_recorder_frame(struct vaapi_recorder *r, int fd, int stride);
 
-#endif
+#endif /* _VAAPI_RECORDER_H_ */

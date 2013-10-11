@@ -27,6 +27,7 @@
 #include <wayland-client.h>
 #include <cairo.h>
 #include "../shared/config-parser.h"
+#include "../shared/zalloc.h"
 #include "subsurface-client-protocol.h"
 
 #define ARRAY_LENGTH(a) (sizeof (a) / sizeof (a)[0])
@@ -57,6 +58,8 @@ void *
 fail_on_null(void *p);
 void *
 xmalloc(size_t s);
+void *
+xzalloc(size_t s);
 char *
 xstrdup(const char *s);
 
@@ -74,6 +77,9 @@ display_get_user_data(struct display *display);
 
 struct wl_display *
 display_get_display(struct display *display);
+
+int
+display_has_subcompositor(struct display *display);
 
 cairo_device_t *
 display_get_cairo_device(struct display *display);
@@ -138,6 +144,8 @@ display_release_window_surface(struct display *display,
 #define SURFACE_SHM    0x02
 
 #define SURFACE_HINT_RESIZE 0x10
+
+#define SURFACE_HINT_RGB565 0x100
 
 cairo_surface_t *
 display_create_surface(struct display *display,
@@ -410,6 +418,15 @@ window_get_title(struct window *window);
 void
 window_set_text_cursor_position(struct window *window, int32_t x, int32_t y);
 
+enum preferred_format {
+	WINDOW_PREFERRED_FORMAT_NONE,
+	WINDOW_PREFERRED_FORMAT_RGB565
+};
+
+void
+window_set_preferred_format(struct window *window,
+			    enum preferred_format format);
+
 int
 widget_set_tooltip(struct widget *parent, char *entry, float x, float y);
 
@@ -538,6 +555,9 @@ input_accept(struct input *input, const char *type);
 void
 input_receive_drag_data(struct input *input, const char *mime_type,
 			data_func_t func, void *user_data);
+int
+input_receive_drag_data_to_fd(struct input *input,
+			      const char *mime_type, int fd);
 
 int
 input_receive_selection_data(struct input *input, const char *mime_type,

@@ -160,7 +160,7 @@ x11_compositor_get_keymap(struct x11_compositor *c)
 static uint32_t
 get_xkb_mod_mask(struct x11_compositor *c, uint32_t in)
 {
-	struct weston_xkb_info *info = &c->core_seat.xkb_info;
+	struct weston_xkb_info *info = c->core_seat.xkb_info;
 	uint32_t ret = 0;
 
 	if ((in & ShiftMask) && info->shift_mod != XKB_MOD_INVALID)
@@ -420,10 +420,10 @@ set_clip_for_output(struct weston_output *output_base, pixman_region32_t *region
 			break;
 		}
 
-		transformed_rect.x1 *= output_base->scale;
-		transformed_rect.y1 *= output_base->scale;
-		transformed_rect.x2 *= output_base->scale;
-		transformed_rect.y2 *= output_base->scale;
+		transformed_rect.x1 *= output_base->current_scale;
+		transformed_rect.y1 *= output_base->current_scale;
+		transformed_rect.x2 *= output_base->current_scale;
+		transformed_rect.y2 *= output_base->current_scale;
 
 		output_rects[i].x = transformed_rect.x1;
 		output_rects[i].y = transformed_rect.y1;
@@ -813,11 +813,9 @@ x11_compositor_create_output(struct x11_compositor *c, int x, int y,
 			XCB_EVENT_MASK_KEYMAP_STATE |
 			XCB_EVENT_MASK_FOCUS_CHANGE;
 
-	output = malloc(sizeof *output);
+	output = zalloc(sizeof *output);
 	if (output == NULL)
 		return NULL;
-
-	memset(output, 0, sizeof *output);
 
 	output->mode.flags =
 		WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED;
@@ -893,8 +891,7 @@ x11_compositor_create_output(struct x11_compositor *c, int x, int y,
 	output->base.set_backlight = NULL;
 	output->base.set_dpms = NULL;
 	output->base.switch_mode = NULL;
-	output->base.current = &output->mode;
-	output->base.origin = output->base.current;
+	output->base.current_mode = &output->mode;
 	output->base.make = "xwayland";
 	output->base.model = "none";
 	weston_output_init(&output->base, &c->base,
@@ -934,7 +931,7 @@ x11_compositor_find_output(struct x11_compositor *c, xcb_window_t window)
 			return output;
 	}
 
-	return NULL;
+	assert(0);
 }
 
 #ifdef HAVE_XCB_XKB
@@ -1464,11 +1461,9 @@ x11_compositor_create(struct wl_display *display,
 
 	weston_log("initializing x11 backend\n");
 
-	c = malloc(sizeof *c);
+	c = zalloc(sizeof *c);
 	if (c == NULL)
 		return NULL;
-
-	memset(c, 0, sizeof *c);
 
 	if (weston_compositor_init(&c->base, display, argc, argv, config) < 0)
 		goto err_free;

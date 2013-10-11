@@ -435,8 +435,7 @@ panel_add_clock(struct panel *panel)
 		return;
 	}
 
-	clock = malloc(sizeof *clock);
-	memset(clock, 0, sizeof *clock);
+	clock = xzalloc(sizeof *clock);
 	clock->panel = panel;
 	panel->clock = clock;
 	clock->clock_fd = timerfd;
@@ -538,8 +537,7 @@ panel_create(struct desktop *desktop)
 	struct panel *panel;
 	struct weston_config_section *s;
 
-	panel = malloc(sizeof *panel);
-	memset(panel, 0, sizeof *panel);
+	panel = xzalloc(sizeof *panel);
 
 	panel->base.configure = panel_configure;
 	panel->window = window_create_custom(desktop->display);
@@ -608,8 +606,7 @@ panel_add_launcher(struct panel *panel, const char *icon, const char *path)
 	char *start, *p, *eq, **ps;
 	int i, j, k;
 
-	launcher = malloc(sizeof *launcher);
-	memset(launcher, 0, sizeof *launcher);
+	launcher = xzalloc(sizeof *launcher);
 	launcher->icon = load_icon_or_fallback(icon);
 	launcher->path = strdup(path);
 
@@ -836,6 +833,31 @@ unlock_dialog_button_handler(struct widget *widget,
 }
 
 static void
+unlock_dialog_touch_down_handler(struct widget *widget, struct input *input,
+		   uint32_t serial, uint32_t time, int32_t id,
+		   float x, float y, void *data)
+{
+	struct unlock_dialog *dialog = data;
+
+	dialog->button_focused = 1;
+	widget_schedule_redraw(widget);
+}
+
+static void
+unlock_dialog_touch_up_handler(struct widget *widget, struct input *input,
+				uint32_t serial, uint32_t time, int32_t id,
+				void *data)
+{
+	struct unlock_dialog *dialog = data;
+	struct desktop *desktop = dialog->desktop;
+
+	dialog->button_focused = 0;
+	widget_schedule_redraw(widget);
+	display_defer(desktop->display, &desktop->unlock_task);
+	dialog->closing = 1;
+}
+
+static void
 unlock_dialog_keyboard_focus_handler(struct window *window,
 				     struct input *device, void *data)
 {
@@ -871,10 +893,7 @@ unlock_dialog_create(struct desktop *desktop)
 	struct display *display = desktop->display;
 	struct unlock_dialog *dialog;
 
-	dialog = malloc(sizeof *dialog);
-	if (!dialog)
-		return NULL;
-	memset(dialog, 0, sizeof *dialog);
+	dialog = xzalloc(sizeof *dialog);
 
 	dialog->window = window_create_custom(display);
 	dialog->widget = frame_create(dialog->window, dialog);
@@ -892,6 +911,10 @@ unlock_dialog_create(struct desktop *desktop)
 				 unlock_dialog_widget_leave_handler);
 	widget_set_button_handler(dialog->button,
 				  unlock_dialog_button_handler);
+	widget_set_touch_down_handler(dialog->button,
+				      unlock_dialog_touch_down_handler);
+	widget_set_touch_up_handler(dialog->button,
+				      unlock_dialog_touch_up_handler);
 
 	desktop_shell_set_lock_surface(desktop->shell,
 				       window_get_wl_surface(dialog->window));
@@ -1019,14 +1042,14 @@ background_create(struct desktop *desktop)
 	struct weston_config_section *s;
 	char *type;
 
-	background = malloc(sizeof *background);
-	memset(background, 0, sizeof *background);
-
+	background = xzalloc(sizeof *background);
 	background->base.configure = background_configure;
 	background->window = window_create_custom(desktop->display);
 	background->widget = window_add_widget(background->window, background);
 	window_set_user_data(background->window, background);
 	widget_set_redraw_handler(background->widget, background_draw);
+	window_set_preferred_format(background->window,
+				    WINDOW_PREFERRED_FORMAT_RGB565);
 
 	s = weston_config_get_section(desktop->config, "shell", NULL, NULL);
 	weston_config_section_get_string(s, "background-image",
@@ -1257,17 +1280,13 @@ panel_add_launchers(struct panel *panel, struct desktop *desktop)
 int main(int argc, char *argv[])
 {
 	struct desktop desktop = { 0 };
-	int config_fd;
 	struct output *output;
 	struct weston_config_section *s;
 
 	desktop.unlock_task.run = unlock_dialog_finish;
 	wl_list_init(&desktop.outputs);
 
-	config_fd = open_config_file("weston.ini");
-	desktop.config = weston_config_parse(config_fd);
-	close(config_fd);
-
+	desktop.config = weston_config_parse("weston.ini");
 	s = weston_config_get_section(desktop.config, "shell", NULL, NULL);
 	weston_config_section_get_bool(s, "locking", &desktop.locking, 1);
 

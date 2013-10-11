@@ -46,12 +46,15 @@ weston_SOURCES =				\
 	pixman-renderer.h			\
 	../shared/matrix.c			\
 	../shared/matrix.h			\
+	../shared/zalloc.h			\
 	weston-launch.h				\
 	weston-egl-ext.h
 
 if ENABLE_EGL
 weston_SOURCES +=				\
-	gl-renderer.c
+	gl-renderer.c				\
+	vertex-clipping.c			\
+	vertex-clipping.h
 endif
 
 git-version.h : .FORCE
@@ -92,7 +95,8 @@ westoninclude_HEADERS =				\
 	version.h				\
 	compositor.h				\
 	../shared/matrix.h			\
-	../shared/config-parser.h
+	../shared/config-parser.h		\
+	../shared/zalloc.h
 
 moduledir = $(libdir)/weston
 module_LTLIBRARIES =				\
@@ -140,7 +144,6 @@ drm_backend_la_CFLAGS =				\
 	$(GCC_CFLAGS)
 drm_backend_la_SOURCES =			\
 	compositor-drm.c			\
-	tty.c					\
 	udev-seat.c				\
 	udev-seat.h				\
 	evdev.c					\
@@ -150,6 +153,12 @@ drm_backend_la_SOURCES =			\
 	launcher-util.h				\
 	libbacklight.c				\
 	libbacklight.h
+
+if ENABLE_VAAPI_RECORDER
+drm_backend_la_SOURCES += vaapi-recorder.c vaapi-recorder.h
+drm_backend_la_LIBADD += $(LIBVA_LIBS)
+drm_backend_la_CFLAGS += $(LIBVA_CFLAGS)
+endif
 endif
 
 if ENABLE_WAYLAND_COMPOSITOR
@@ -183,7 +192,8 @@ rpi_backend_la_SOURCES =			\
 	rpi-renderer.c				\
 	rpi-renderer.h				\
 	rpi-bcm-stubs.h 			\
-	tty.c					\
+	launcher-util.c				\
+	launcher-util.h				\
 	evdev.c					\
 	evdev.h					\
 	evdev-touchpad.c
@@ -214,13 +224,13 @@ fbdev_backend_la_CFLAGS = \
 	$(GCC_CFLAGS)
 fbdev_backend_la_SOURCES = \
 	compositor-fbdev.c \
-	tty.c \
 	udev-seat.c \
 	udev-seat.h \
 	evdev.c \
 	evdev.h \
 	evdev-touchpad.c \
-	launcher-util.c
+	launcher-util.c \
+	launcher-util.h
 endif
 
 if ENABLE_RDP_COMPOSITOR

@@ -398,6 +398,9 @@ triangle_frame_callback(void *data, struct wl_callback *callback,
 	if (callback)
 		wl_callback_destroy(callback);
 
+	eglMakeCurrent(tri->egl->dpy, tri->egl_surface,
+				   tri->egl_surface, tri->egl->ctx);
+
 	glViewport(0, 0, tri->width, tri->height);
 
 	triangle_draw(&tri->gl, tri->time);
@@ -489,7 +492,8 @@ triangle_create(struct window *window, struct egl_state *egl)
 {
 	struct triangle *tri;
 
-	tri = calloc(1, sizeof *tri);
+	tri = xmalloc(sizeof *tri);
+	memset(tri, 0, sizeof *tri);
 
 	tri->egl = egl;
 	tri->widget = window_add_subsurface(window, tri,
@@ -709,9 +713,8 @@ demoapp_create(struct display *display)
 {
 	struct demoapp *app;
 
-	app = calloc(1, sizeof *app);
-	if (!app)
-		return NULL;
+	app = xmalloc(sizeof *app);
+	memset(app, 0, sizeof *app);
 
 	app->egl = egl_state_create(display_get_display(display));
 
@@ -778,6 +781,12 @@ main(int argc, char *argv[])
 	display = display_create(&argc, argv);
 	if (display == NULL) {
 		fprintf(stderr, "failed to create display: %m\n");
+		return -1;
+	}
+
+	if (!display_has_subcompositor(display)) {
+		fprintf(stderr, "compositor does not support "
+			"the subcompositor extension\n");
 		return -1;
 	}
 

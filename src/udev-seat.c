@@ -75,7 +75,7 @@ device_added(struct udev_device *udev_device, struct udev_input *input)
 	/* Use non-blocking mode so that we can loop on read on
 	 * evdev_device_data() until all events on the fd are
 	 * read.  mtdev_get() also expects this. */
-	fd = weston_launcher_open(c, devnode, O_RDWR | O_NONBLOCK);
+	fd = weston_launcher_open(c->launcher, devnode, O_RDWR | O_NONBLOCK);
 	if (fd < 0) {
 		weston_log("opening input device '%s' failed.\n", devnode);
 		return 0;
@@ -338,11 +338,10 @@ udev_seat_create(struct weston_compositor *c, const char *seat_name)
 {
 	struct udev_seat *seat;
 
-	seat = malloc(sizeof *seat);
+	seat = zalloc(sizeof *seat);
 
 	if (!seat)
 		return NULL;
-	memset(seat, 0, sizeof *seat);
 	weston_seat_init(&seat->base, c, seat_name);
 	seat->base.led_update = drm_led_update;
 
