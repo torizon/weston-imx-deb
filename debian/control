@@ -11,6 +11,7 @@ Build-Depends:
  quilt,
  dh-autoreconf,
  pkg-config,
+ librsvg2-bin,
  libpixman-1-dev,
  libpng-dev,
  libjpeg-dev,
