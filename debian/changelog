@@ -42,7 +42,9 @@ weston (1.4.0-1) UNRELEASED; urgency=medium
       to scroll.  Added a context menu for easy access to copy/paste/new
       terminal (which have always been available as Ctrl-Shift-C/V/N)
   * d/control: build depend on librsvg2-bin for PNG file generation.
-  * d/weston.install: drop weston-tablet-shell
+  * d/weston.install: update
+    - drop weston-tablet-shell
+    + add gl-renderer
 
  -- Hector Oron <zumbi@debian.org>  Thu, 30 Jan 2014 23:06:00 +0100
 
