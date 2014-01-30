@@ -47,6 +47,8 @@ weston (1.4.0-1) UNRELEASED; urgency=medium
     + add gl-renderer
     + add clients
   * d/control: bump standards version
+  * d/control: add build-dependency against libxcb-xkb-dev
+    (Closes: #733229)
 
  -- Hector Oron <zumbi@debian.org>  Thu, 30 Jan 2014 23:06:00 +0100
 
