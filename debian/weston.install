@@ -24,3 +24,31 @@ usr/share/man/man1/weston.1
 usr/share/man/man5/weston.ini.5
 usr/share/man/man7/weston-drm.7
 usr/share/weston
+
+# Clients
+clients/weston-calibrator	usr/lib/weston/
+clients/weston-clickdot	usr/lib/weston/
+clients/weston-cliptest	usr/lib/weston/
+clients/weston-desktop-shell	usr/lib/weston/
+clients/weston-dnd	usr/lib/weston/
+clients/weston-editor	usr/lib/weston/
+clients/weston-eventdemo	usr/lib/weston/
+clients/weston-flower	usr/lib/weston/
+clients/weston-fullscreen	usr/lib/weston/
+clients/weston-gears	usr/lib/weston/
+clients/weston-image	usr/lib/weston/
+clients/weston-info	usr/lib/weston/
+clients/weston-keyboard	usr/lib/weston/
+clients/weston-multi-resource	usr/lib/weston/
+clients/weston-resizor	usr/lib/weston/
+clients/weston-scaler	usr/lib/weston/
+clients/weston-screensaver	usr/lib/weston/
+clients/weston-screenshooter	usr/lib/weston/
+clients/weston-simple-egl	usr/lib/weston/
+clients/weston-simple-im	usr/lib/weston/
+clients/weston-simple-shm	usr/lib/weston/
+clients/weston-simple-touch	usr/lib/weston/
+clients/weston-smoke	usr/lib/weston/
+clients/weston-stacking	usr/lib/weston/
+clients/weston-terminal	usr/lib/weston/
+clients/weston-transformed	usr/lib/weston/
