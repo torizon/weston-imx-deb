@@ -32,6 +32,7 @@ Build-Depends:
  libgbm-dev,
  libxkbcommon-dev (>= 0.1.0~2),
  libcairo2-dev,
+ libpango1.0-dev,
  libgdk-pixbuf2.0-dev,
  libxcursor-dev,
  libmtdev-dev,
