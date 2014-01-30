@@ -45,6 +45,7 @@ weston (1.4.0-1) UNRELEASED; urgency=medium
   * d/weston.install: update
     - drop weston-tablet-shell
     + add gl-renderer
+  * d/control: bump standards version
 
  -- Hector Oron <zumbi@debian.org>  Thu, 30 Jan 2014 23:06:00 +0100
 
