@@ -23,6 +23,7 @@ Build-Depends:
  libgles2-mesa-dev (>= 9.0~),
  libwayland-dev (>= 1.2.0),
  libxcb1-dev,
+ libxcb-composite0-dev,
  libxcb-xfixes0-dev,
  libxcb-xkb-dev,
  libx11-xcb-dev,

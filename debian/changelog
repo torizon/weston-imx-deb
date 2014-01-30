@@ -41,14 +41,16 @@ weston (1.4.0-1) UNRELEASED; urgency=medium
     - weston-terminal gained scrollback history, use Ctrl+Shift UP/DOWN
       to scroll.  Added a context menu for easy access to copy/paste/new
       terminal (which have always been available as Ctrl-Shift-C/V/N)
-  * d/control: build depend on librsvg2-bin for PNG file generation.
+  * d/control: update
+    + bump standards version
+    + build depend on librsvg2-bin for PNG file generation.
+    + add build dependency against libxcb-composite0-dev
+    + add build-dependency against libxcb-xkb-dev
+    (Closes: #733229)
   * d/weston.install: update
-    - drop weston-tablet-shell
+    + drop weston-tablet-shell
     + add gl-renderer
     + add clients
-  * d/control: bump standards version
-  * d/control: add build-dependency against libxcb-xkb-dev
-    (Closes: #733229)
 
  -- Hector Oron <zumbi@debian.org>  Thu, 30 Jan 2014 23:06:00 +0100
 
