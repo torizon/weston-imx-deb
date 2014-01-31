@@ -1,4 +1,4 @@
-weston (1.4.0-1) UNRELEASED; urgency=medium
+weston (1.4.0-1) unstable; urgency=medium
 
   * New upstream release 1.4.0:
     - Window buttons for xwayland windows and proper decorations for the
