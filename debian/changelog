@@ -8,6 +8,7 @@ weston (1.5.0-1) UNRELEASED; urgency=medium
     + Dropped, no longer needed.
   * debian/weston.install:
     + Fix path for demo clients.
+    + Install the fullscreen shell.
 
  -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 23 May 2014 23:12:59 +0200
 
