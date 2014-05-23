@@ -130,6 +130,12 @@ suite. The file is searched for in
 .IR "__weston_modules_dir__" ,
 or you can pass an absolute path.
 .TP
+.BR \-\-no-config
+Do not read
+.I weston.ini
+for the compositor. Avoids e.g. loading compositor modules via the
+configuration file, which is useful for unit tests.
+.TP
 \fB\-\^S\fR\fIname\fR, \fB\-\-socket\fR=\fIname\fR
 Weston will listen in the Wayland socket called
 .IR name .
@@ -185,6 +191,10 @@ X windows to emulate the same number of outputs.
 \fB\-\-width\fR=\fIW\fR, \fB\-\-height\fR=\fIH\fR
 Make the default size of each X window
 .IR W x H " pixels."
+.TP
+.B \-\-scale\fR=\fIN\fR
+Give all outputs a scale factor of
+.I N.
 .TP
 .B \-\-use\-pixman
 Use the pixman renderer.  By default weston will try to use EGL and

@@ -58,7 +58,9 @@ struct gl_renderer_interface {
 	EGLDisplay (*display)(struct weston_compositor *ec);
 
 	int (*output_create)(struct weston_output *output,
-			     EGLNativeWindowType window);
+			     EGLNativeWindowType window,
+			     const EGLint *attribs,
+			     const EGLint *visual_id);
 
 	void (*output_destroy)(struct weston_output *output);
 
@@ -73,8 +75,8 @@ struct gl_renderer_interface {
 	 * tightly packed.
 	 *
 	 * The top and bottom textures will extend over the sides to the
-	 * full width of the bordered window while.  The right and left
-	 * edges, however, will extend only to the top and bottom of the
+	 * full width of the bordered window.  The right and left edges,
+	 * however, will extend only to the top and bottom of the
 	 * compositor surface.  This is demonstrated by the picture below:
 	 *
 	 * +-----------------------+
@@ -99,4 +101,3 @@ struct gl_renderer_interface {
 	void (*print_egl_error_state)(void);
 };
 
-struct gl_renderer_interface gl_renderer_interface;

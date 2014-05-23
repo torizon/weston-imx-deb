@@ -35,8 +35,6 @@
 static const char default_seat[] = "seat0";
 static const char default_seat_name[] = "default";
 
-static struct udev_seat *
-udev_seat_create(struct weston_compositor *c, const char *seat_name);
 static void
 udev_seat_destroy(struct udev_seat *seat);
 
@@ -67,7 +65,7 @@ device_added(struct udev_device *udev_device, struct udev_input *input)
 	if (!seat_name)
 		seat_name = default_seat_name;
 
-	seat = udev_seat_get_named(c, seat_name);
+	seat = udev_seat_get_named(input, seat_name);
 
 	if (seat == NULL)
 		return -1;
@@ -127,7 +125,7 @@ device_added(struct udev_device *udev_device, struct udev_input *input)
 		wl_list_for_each(output, &c->output_list, link)
 			if (strcmp(output->name, device->output_name) == 0)
 				evdev_device_set_output(device, output);
-	} else if (device->output == NULL) {
+	} else if (device->output == NULL && !wl_list_empty(&c->output_list)) {
 		output = container_of(c->output_list.next,
 				      struct weston_output, link);
 		evdev_device_set_output(device, output);
@@ -239,13 +237,13 @@ out:
 }
 
 int
-udev_input_enable(struct udev_input *input, struct udev *udev)
+udev_input_enable(struct udev_input *input)
 {
 	struct wl_event_loop *loop;
 	struct weston_compositor *c = input->compositor;
 	int fd;
 
-	input->udev_monitor = udev_monitor_new_from_netlink(udev, "udev");
+	input->udev_monitor = udev_monitor_new_from_netlink(input->udev, "udev");
 	if (!input->udev_monitor) {
 		weston_log("udev: failed to create the udev monitor\n");
 		return -1;
@@ -270,7 +268,7 @@ udev_input_enable(struct udev_input *input, struct udev *udev)
 		return -1;
 	}
 
-	if (udev_input_add_devices(input, udev) < 0)
+	if (udev_input_add_devices(input, input->udev) < 0)
 		return -1;
 
 	input->enabled = 1;
@@ -318,7 +316,9 @@ udev_input_init(struct udev_input *input, struct weston_compositor *c, struct ud
 	memset(input, 0, sizeof *input);
 	input->seat_id = strdup(seat_id);
 	input->compositor = c;
-	if (udev_input_enable(input, udev) < 0)
+	input->udev = udev;
+	input->udev = udev_ref(udev);
+	if (udev_input_enable(input) < 0)
 		goto err;
 
 	return 0;
@@ -335,6 +335,7 @@ udev_input_destroy(struct udev_input *input)
 	udev_input_disable(input);
 	wl_list_for_each_safe(seat, next, &input->compositor->seat_list, base.link)
 		udev_seat_destroy(seat);
+	udev_unref(input->udev);
 	free(input->seat_id);
 }
 
@@ -356,23 +357,27 @@ notify_output_create(struct wl_listener *listener, void *data)
 	struct evdev_device *device;
 	struct weston_output *output = data;
 
-	wl_list_for_each(device, &seat->devices_list, link)
+	wl_list_for_each(device, &seat->devices_list, link) {
 		if (device->output_name &&
 		    strcmp(output->name, device->output_name) == 0) {
 			evdev_device_set_output(device, output);
-			break;
 		}
+
+		if (device->output_name == NULL && device->output == NULL)
+			evdev_device_set_output(device, output);
+	}
 }
 
 static struct udev_seat *
-udev_seat_create(struct weston_compositor *c, const char *seat_name)
+udev_seat_create(struct udev_input *input, const char *seat_name)
 {
+	struct weston_compositor *c = input->compositor;
 	struct udev_seat *seat;
 
 	seat = zalloc(sizeof *seat);
-
 	if (!seat)
 		return NULL;
+
 	weston_seat_init(&seat->base, c, seat_name);
 	seat->base.led_update = drm_led_update;
 
@@ -393,8 +398,9 @@ udev_seat_destroy(struct udev_seat *seat)
 }
 
 struct udev_seat *
-udev_seat_get_named(struct weston_compositor *c, const char *seat_name)
+udev_seat_get_named(struct udev_input *input, const char *seat_name)
 {
+	struct weston_compositor *c = input->compositor;
 	struct udev_seat *seat;
 
 	wl_list_for_each(seat, &c->seat_list, base.link) {
@@ -402,7 +408,7 @@ udev_seat_get_named(struct weston_compositor *c, const char *seat_name)
 			return seat;
 	}
 
-	seat = udev_seat_create(c, seat_name);
+	seat = udev_seat_create(input, seat_name);
 
 	if (!seat)
 		return NULL;

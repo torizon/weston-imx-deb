@@ -465,6 +465,7 @@ struct terminal {
 	double average_width;
 	cairo_scaled_font_t *font_normal, *font_bold;
 	uint32_t hide_cursor_serial;
+	int size_in_title;
 
 	struct wl_data_source *selection;
 	uint32_t click_time;
@@ -771,10 +772,10 @@ terminal_resize_cells(struct terminal *terminal,
 	} else {
 		terminal->max_width = width;
 		data_pitch = width * sizeof(union utf8_char);
-		data = zalloc(data_pitch * terminal->buffer_height);
+		data = xzalloc(data_pitch * terminal->buffer_height);
 		attr_pitch = width * sizeof(struct attr);
-		data_attr = malloc(attr_pitch * terminal->buffer_height);
-		tab_ruler = zalloc(width);
+		data_attr = xmalloc(attr_pitch * terminal->buffer_height);
+		tab_ruler = xzalloc(width);
 		attr_init(data_attr, terminal->curr_attr,
 			  width * terminal->buffer_height);
 
@@ -850,6 +851,7 @@ resize_handler(struct widget *widget,
 		widget_set_size(terminal->widget, width, height);
 		if (asprintf(&p, "%s — [%dx%d]", terminal->title, columns, rows) > 0) {
 		    window_set_title(terminal->window, p);
+		    terminal->size_in_title = 1;
 		    free(p);
 		}
 	}
@@ -1091,6 +1093,12 @@ redraw_handler(struct widget *widget, void *data)
 				cairo_line_to(cr, text_x + average_width, (double) text_y + 1.5);
 				cairo_stroke(cr);
 			}
+
+                        /* skip space glyph (RLE) we use as a placeholder of
+                           the right half of a double-width character,
+                           because RLE is not available in every font. */
+			if (p_row[col].ch == 0x200B)
+				continue;
 
 			glyph_run_add(&run, text_x, text_y, &p_row[col]);
 		}
@@ -2740,7 +2748,10 @@ enter_handler(struct widget *widget,
 	struct terminal *terminal = data;
 
 	/* Reset title to get rid of resizing '[WxH]' in titlebar */
-	window_set_title(terminal->window, terminal->title);
+	if (terminal->size_in_title) {
+		window_set_title(terminal->window, terminal->title);
+		terminal->size_in_title = 0;
+	}
 
 	return CURSOR_IBEAM;
 }
@@ -2958,8 +2969,9 @@ terminal_run(struct terminal *terminal, const char *path)
 	display_watch_fd(terminal->display, terminal->master,
 			 EPOLLIN | EPOLLHUP, &terminal->io_task);
 
-	window_set_fullscreen(terminal->window, option_fullscreen);
-	if (!window_is_fullscreen(terminal->window))
+	if (option_fullscreen)
+		window_set_fullscreen(terminal->window, 1);
+	else
 		terminal_resize(terminal, 80, 24);
 
 	return 0;
