@@ -1,3 +1,9 @@
+weston (1.5.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 23 May 2014 23:12:59 +0200
+
 weston (1.4.0-1) unstable; urgency=medium
 
   * New upstream release 1.4.0:
