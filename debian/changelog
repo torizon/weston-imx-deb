@@ -6,6 +6,8 @@ weston (1.5.0-1) UNRELEASED; urgency=medium
     + Drop librsvg2-bin build dependency, no longer needed.
   * debian/clean:
     + Dropped, no longer needed.
+  * debian/weston.install:
+    + Fix path for demo clients.
 
  -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 23 May 2014 23:12:59 +0200
 
