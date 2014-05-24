@@ -12,6 +12,8 @@ weston (1.5.0-1) UNRELEASED; urgency=medium
   * debian/patches/0001-animation-fix-move-scale-animation.patch:
     + Patch from Jonny Lamb, taken from wayland-devel@, that fixes
       move animations, as triggered e.g. by exposay.
+  * d/p/0001-exposay-fix-crash-when-navigating-with-the-keyboard.patch:
+    + New patch, fix a crash in exposay.
 
  -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 23 May 2014 23:12:59 +0200
 
