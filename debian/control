@@ -6,6 +6,7 @@ Uploaders:
  Cyril Brulebois <kibi@debian.org>,
  Mike Gabriel <sunweaver@debian.org>,
  Héctor Orón Martínez <zumbi@debian.org>,
+ Emilio Pozuelo Monfort <pochu@debian.org>,
 Build-Depends:
  debhelper (>= 9),
  quilt,
