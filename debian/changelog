@@ -1,4 +1,4 @@
-weston (1.5.0-1) UNRELEASED; urgency=medium
+weston (1.5.0-1) unstable; urgency=medium
 
   * Add myself to Uploaders.
   * New upstream release.
@@ -16,7 +16,7 @@ weston (1.5.0-1) UNRELEASED; urgency=medium
   * d/p/0001-exposay-fix-crash-when-navigating-with-the-keyboard.patch:
     + New patch, fix a crash in exposay.
 
- -- Emilio Pozuelo Monfort <pochu@debian.org>  Fri, 23 May 2014 23:12:59 +0200
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Sat, 24 May 2014 02:53:44 +0200
 
 weston (1.4.0-1) unstable; urgency=medium
 
