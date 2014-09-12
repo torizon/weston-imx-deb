@@ -1,3 +1,11 @@
+weston (1.5.93-1) UNRELEASED; urgency=medium
+
+  * New upstream development release.
+  * d/patches/*: drop them.
+  * d/control: bump build depend on libinput-dev.
+
+ -- Hector Oron <zumbi@debian.org>  Fri, 12 Sep 2014 18:28:31 +0200
+
 weston (1.5.0-3) unstable; urgency=medium
 
   * d/p/0001-libinput-Use-floating-point-instead-of-fixed-point-n.patch,
