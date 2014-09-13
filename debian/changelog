@@ -2,7 +2,9 @@ weston (1.5.93-1) UNRELEASED; urgency=medium
 
   * New upstream development release.
   * d/patches/*: drop them.
-  * d/control: bump build depend on libinput-dev.
+  * d/control:
+    + bump wayland version requirement for build.
+    + bump build depend on libinput-dev.
 
  -- Hector Oron <zumbi@debian.org>  Fri, 12 Sep 2014 18:28:31 +0200
 
