@@ -49,9 +49,9 @@ Package: weston
 Architecture: linux-any
 Depends:
  adduser,
- libegl1-mesa (>= 8.0-2),
- libegl1-mesa-drivers (>= 8.0-2),
- libgles2-mesa (>= 8.0-2),
+ libegl1-mesa (>= 8.0-2) | libegl1-x11,
+ libwayland-egl1-mesa (>= 10.1.0-2) | libwayland-egl1,
+ libgles2-mesa (>= 8.0-2) | libgles2,
  ${shlibs:Depends},
  ${misc:Depends},
 Recommends:
