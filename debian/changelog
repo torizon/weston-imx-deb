@@ -1,3 +1,9 @@
+weston (1.6.93-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+
+ -- Timo Aaltonen <tjaalton@debian.org>  Tue, 10 Feb 2015 19:47:34 +0200
+
 weston (1.6.1-1) experimental; urgency=medium
 
   * New upstream bugfix release:
