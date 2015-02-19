@@ -1,7 +1,8 @@
-weston (1.6.93-1) UNRELEASED; urgency=medium
+weston (1.7.0-1) UNRELEASED; urgency=medium
 
   * New upstream release.
   * control: Bump libinput and libwayland-dev build-deps.
+  * install: Add new files.
 
  -- Timo Aaltonen <tjaalton@debian.org>  Tue, 10 Feb 2015 19:47:34 +0200
 
