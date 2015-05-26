@@ -1,8 +1,12 @@
 weston (1.7.0-1) UNRELEASED; urgency=medium
 
+  [ Timo Aaltonen ]
   * New upstream release.
   * control: Bump libinput and libwayland-dev build-deps.
   * install: Add new files.
+
+  [ Emilio Pozuelo Monfort ]
+  * Remove Cyril from Uploaders. Thanks for your past work!
 
  -- Timo Aaltonen <tjaalton@debian.org>  Tue, 10 Feb 2015 19:47:34 +0200
 
