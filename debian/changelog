@@ -1,4 +1,4 @@
-weston (1.7.0-1) UNRELEASED; urgency=medium
+weston (1.7.0-1) unstable; urgency=medium
 
   [ Timo Aaltonen ]
   * New upstream release.
@@ -7,8 +7,9 @@ weston (1.7.0-1) UNRELEASED; urgency=medium
 
   [ Emilio Pozuelo Monfort ]
   * Remove Cyril from Uploaders. Thanks for your past work!
+  * Upload to unstable.
 
- -- Timo Aaltonen <tjaalton@debian.org>  Tue, 10 Feb 2015 19:47:34 +0200
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Wed, 27 May 2015 01:07:50 +0200
 
 weston (1.6.1-1) experimental; urgency=medium
 
