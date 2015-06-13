@@ -89,9 +89,13 @@ spring-tool
 
 *.weston
 *.test
+*.ivi
 wcap-decode
 matrix-test
 setbacklight
 weston.1
 weston-drm.7
 weston.ini.5
+
+/tests/weston-ivi.ini
+internal-screenshot-00.png
