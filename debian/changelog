@@ -1,6 +1,7 @@
 weston (1.9.92-1) UNRELEASED; urgency=medium
 
   * New upstream release
+  * d/control: build depend on wayland-protocols
 
  -- Héctor Orón Martínez <zumbi@debian.org>  Sun, 07 Feb 2016 21:22:32 +0100
 
