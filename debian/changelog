@@ -1,4 +1,4 @@
-weston (1.9.92-1) UNRELEASED; urgency=medium
+weston (1.9.92-1) experimental; urgency=medium
 
   * New upstream release
   * d/control: build depend on wayland-protocols
