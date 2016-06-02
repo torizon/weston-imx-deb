@@ -2,7 +2,7 @@ weston (1.10.0-1) unstable; urgency=medium
 
   * New upstream release
 
- -- Héctor Orón Martínez <zumbi@debian.org>  Thu, 31 Mar 2016 14:22:25 +0200
+ -- Héctor Orón Martínez <zumbi@debian.org>  Wed, 01 Jun 2016 13:35:05 +0200
 
 weston (1.9.92-2) experimental; urgency=medium
 
