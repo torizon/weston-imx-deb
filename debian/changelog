@@ -1,3 +1,9 @@
+weston (1.11.94-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Wed, 14 Sep 2016 12:14:59 +0200
+
 weston (1.11.91-1) experimental; urgency=medium
 
   * New upstream pre-release.
