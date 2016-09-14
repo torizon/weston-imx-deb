@@ -1,6 +1,7 @@
 weston (1.11.94-1) UNRELEASED; urgency=medium
 
   * New upstream release.
+  * debian/weston.install: use wildcards for libweston{,-desktop}.so.*.
 
  -- Emilio Pozuelo Monfort <pochu@debian.org>  Wed, 14 Sep 2016 12:14:59 +0200
 
