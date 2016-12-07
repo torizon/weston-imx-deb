@@ -7,7 +7,7 @@ Uploaders:
  Héctor Orón Martínez <zumbi@debian.org>,
  Emilio Pozuelo Monfort <pochu@debian.org>,
 Build-Depends:
- debhelper (>= 9),
+ debhelper (>= 10),
  quilt,
  dh-autoreconf,
  pkg-config,
