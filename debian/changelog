@@ -1,6 +1,7 @@
 weston (1.12.0-2) UNRELEASED; urgency=medium
 
   * Enable RDP compositor and screen sharing. Closes: #775855, #850658.
+  * Fix build with freerdp2. Patch based on one from John Moser in #850658.
 
  -- Emilio Pozuelo Monfort <pochu@debian.org>  Mon, 16 Jan 2017 19:45:58 +0100
 
