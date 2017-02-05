@@ -1,4 +1,4 @@
-weston (1.12.0-3) UNRELEASED; urgency=medium
+weston (1.12.0-3) unstable; urgency=medium
 
   * Remove useless dependency on libegl1-mesa-drivers.
   * Disable the freerdp backend for stretch. freerdp2 doesn't build
@@ -6,7 +6,7 @@ weston (1.12.0-3) UNRELEASED; urgency=medium
     against our snapshot of freerdp 1.
   * Drop obsolete --enable-libinput-backend configure switch.
 
- -- Emilio Pozuelo Monfort <pochu@debian.org>  Sun, 05 Feb 2017 10:35:47 +0100
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Sun, 05 Feb 2017 10:57:54 +0100
 
 weston (1.12.0-2) unstable; urgency=medium
 
