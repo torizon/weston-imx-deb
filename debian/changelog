@@ -1,7 +1,11 @@
 weston (3.0.0-1) unstable; urgency=medium
 
+  [ Timo Aaltonen ]
   * New upstream release.
   * control, libweston*.{install,symbols, rules: Bump soversion.
+
+  [ Emilio Pozuelo Monfort ]
+  * debian/copyright: add missing copyright holders.
 
  -- Timo Aaltonen <tjaalton@debian.org>  Thu, 10 Aug 2017 12:10:19 +0300
 
