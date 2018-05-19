@@ -1,3 +1,9 @@
+weston (4.0.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+
+ -- Emilio Pozuelo Monfort <pochu@debian.org>  Sat, 19 May 2018 12:41:34 +0200
+
 weston (3.0.0-1) unstable; urgency=medium
 
   [ Timo Aaltonen ]
