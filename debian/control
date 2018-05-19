@@ -81,7 +81,6 @@ Description: reference implementation of a wayland compositor (shared libs)
 Package: libweston-4-dev
 Section: libdevel
 Architecture: linux-any
-Priority: extra
 Depends:
  libweston-4-0 (= ${binary:Version}),
  libwayland-dev,
