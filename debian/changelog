@@ -6,6 +6,7 @@ weston (4.0.0-1) UNRELEASED; urgency=medium
   * Update Vcs-* for salsa.
   * Make libweston-4-dev priority optional.
   * Update copyright.
+  * Enable systemd notify support. Closes: #886919.
 
  -- Emilio Pozuelo Monfort <pochu@debian.org>  Sat, 19 May 2018 12:41:34 +0200
 
