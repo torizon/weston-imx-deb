@@ -5,6 +5,7 @@ weston (4.0.0-1) UNRELEASED; urgency=medium
   * Update symbols.
   * Update Vcs-* for salsa.
   * Make libweston-4-dev priority optional.
+  * Update copyright.
 
  -- Emilio Pozuelo Monfort <pochu@debian.org>  Sat, 19 May 2018 12:41:34 +0200
 
