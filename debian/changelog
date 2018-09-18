@@ -3,6 +3,7 @@ weston (5.0.0-1) UNRELEASED; urgency=medium
   * Update build dependencies.
   * Update the watch file for the new upstream website layout.
   * New upstream release.
+  * Bump libdrm-dev and libgbm-dev build dependencies.
 
  -- Emilio Pozuelo Monfort <pochu@debian.org>  Tue, 18 Sep 2018 11:41:55 +0200
 
