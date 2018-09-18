@@ -5,6 +5,7 @@ weston (5.0.0-1) UNRELEASED; urgency=medium
   * New upstream release.
   * Bump libdrm-dev and libgbm-dev build dependencies.
   * Rename packages for soname bump.
+  * Update symbols file.
 
  -- Emilio Pozuelo Monfort <pochu@debian.org>  Tue, 18 Sep 2018 11:41:55 +0200
 
