@@ -1,3 +1,12 @@
+weston (5.0.0-3) UNRELEASED; urgency=medium
+
+  * debian/control: add libdbus-1-dev to Build-Depends
+    - Fixes "won't start despite having an active logind session
+    (Closes: #799325)
+    Thanks Paul Menzel for analysis.
+
+ -- Héctor Orón Martínez <zumbi@debian.org>  Thu, 28 Mar 2019 12:43:26 +0100
+
 weston (5.0.0-2) unstable; urgency=medium
 
   [ Emilio Pozuelo Monfort ]
