@@ -41,6 +41,13 @@ Build-Depends:
  libsystemd-dev,
  libinput-dev (>= 0.8.0),
  wayland-protocols (>= 1.13),
+ freerdp2-dev,
+ meson,
+ libwebp-dev,
+ libva-dev,
+ libgstreamer1.0-dev,
+ libgstreamer-plugins-base1.0-dev,
+ libxml2-dev
 Standards-Version: 3.9.8
 Homepage: http://wayland.freedesktop.org/
 Vcs-Git: https://salsa.debian.org/xorg-team/wayland/weston.git
@@ -64,7 +71,7 @@ Description: reference implementation of a wayland compositor
  and fast compositor and is suitable for many embedded and mobile use
  cases.
 
-Package: libweston-5-0
+Package: libweston-6-0
 Section: libs
 Architecture: linux-any
 Depends:
@@ -81,11 +88,11 @@ Description: reference implementation of a wayland compositor (shared libs)
  .
  This package includes the libweston shared libraries.
 
-Package: libweston-5-dev
+Package: libweston-6-dev
 Section: libdevel
 Architecture: linux-any
 Depends:
- libweston-5-0 (= ${binary:Version}),
+ libweston-6-0 (= ${binary:Version}),
  libwayland-dev,
  libpixman-1-dev,
  libxkbcommon-dev,
