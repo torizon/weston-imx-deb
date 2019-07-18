@@ -1,8 +1,9 @@
-weston (6.0.1-0) UNRELEASED; urgency=medium
+weston (6.0.1-1) unstable; urgency=medium
 
+  [ Rohan Garg ]
   * New upstream release
 
- -- Rohan Garg <rohan.garg@collabora.com>  Wed, 10 Jul 2019 14:14:57 +0200
+ -- Héctor Orón Martínez <zumbi@debian.org>  Thu, 18 Jul 2019 06:27:22 +0200
 
 weston (5.0.0-3) unstable; urgency=medium
 
