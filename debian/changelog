@@ -1,3 +1,9 @@
+weston (7.0.0-1~exp1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Héctor Orón Martínez <zumbi@debian.org>  Tue, 03 Sep 2019 12:56:19 +0200
+
 weston (6.0.1-2) unstable; urgency=medium
 
   * debian/control: bump standards version
