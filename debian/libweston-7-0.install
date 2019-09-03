@@ -8,4 +8,4 @@ usr/lib/*/libweston-7/remoting-plugin.so
 usr/lib/*/libweston-7/wayland-backend.so
 usr/lib/*/libweston-7/x11-backend.so
 usr/lib/*/libweston-7/xwayland.so
-usr/lib/*/libweston-desktop-6.so.*
+usr/lib/*/libweston-desktop-7.so.*
