@@ -47,10 +47,10 @@ libweston-7.so.0 libweston-7-0 #MINVER#
  weston_compositor_add_axis_binding@Base 1.12.0
  weston_compositor_add_button_binding@Base 1.12.0
  weston_compositor_add_debug_binding@Base 1.12.0
- weston_compositor_add_debug_scope@Base 6.0
  weston_compositor_add_head@Base 5.0.0
  weston_compositor_add_heads_changed_listener@Base 5.0.0
  weston_compositor_add_key_binding@Base 1.12.0
+ weston_compositor_add_log_scope@Base 7.0.0
  weston_compositor_add_modifier_binding@Base 1.12.0
  weston_compositor_add_pending_output@Base 3.0.0
  weston_compositor_add_touch_binding@Base 1.12.0
@@ -59,6 +59,7 @@ libweston-7.so.0 libweston-7-0 #MINVER#
  weston_compositor_create_output_with_head@Base 5.0.0
  weston_compositor_damage_all@Base 1.12.0
  weston_compositor_destroy@Base 1.12.0
+ weston_compositor_enable_content_protection@Base 7.0.0
  weston_compositor_enable_debug_protocol@Base 6.0
  weston_compositor_enable_touch_calibrator@Base 5.0.0
  weston_compositor_exit@Base 1.12.0
@@ -72,6 +73,7 @@ libweston-7.so.0 libweston-7-0 #MINVER#
  weston_compositor_iterate_heads@Base 5.0.0
  weston_compositor_load_backend@Base 1.12.0
  weston_compositor_load_xwayland@Base 1.12.0
+ weston_compositor_log_scope_destroy@Base 7.0.0
  weston_compositor_offscreen@Base 1.12.0
  weston_compositor_pick_view@Base 1.12.0
  weston_compositor_print_scene_graph@Base 6.0
@@ -84,6 +86,7 @@ libweston-7.so.0 libweston-7-0 #MINVER#
  weston_compositor_shutdown@Base 1.12.0
  weston_compositor_sleep@Base 1.12.0
  weston_compositor_stack_plane@Base 1.12.0
+ weston_compositor_tear_down@Base 7.0.0
  weston_compositor_wake@Base 1.12.0
  weston_config_get_name_from_env@Base 6.0
  weston_config_get_section@Base 1.12.0
@@ -95,16 +98,6 @@ libweston-7.so.0 libweston-7-0 #MINVER#
  weston_config_section_get_int@Base 1.12.0
  weston_config_section_get_string@Base 1.12.0
  weston_config_section_get_uint@Base 1.12.0
- weston_debug_scope_destroy@Base 6.0
- weston_debug_scope_is_enabled@Base 6.0
- weston_debug_scope_printf@Base 6.0
- weston_debug_scope_timestamp@Base 6.0
- weston_debug_scope_vprintf@Base 6.0
- weston_debug_scope_write@Base 6.0
- weston_debug_stream_complete@Base 6.0
- weston_debug_stream_printf@Base 6.0
- weston_debug_stream_vprintf@Base 6.0
- weston_debug_stream_write@Base 6.0
  weston_environment_get_fd@Base 1.12.0
  weston_fade_run@Base 1.12.0
  weston_fade_update@Base 1.12.0
@@ -122,6 +115,7 @@ libweston-7.so.0 libweston-7-0 #MINVER#
  weston_head_release@Base 5.0.0
  weston_head_reset_device_changed@Base 5.0.0
  weston_head_set_connection_status@Base 5.0.0
+ weston_head_set_content_protection_status@Base 7.0.0
  weston_head_set_internal@Base 5.0.0
  weston_head_set_monitor_strings@Base 5.0.0
  weston_head_set_non_desktop@Base 6.0
@@ -144,10 +138,27 @@ libweston-7.so.0 libweston-7-0 #MINVER#
  weston_layer_set_mask_infinite@Base 1.12.0
  weston_layer_set_position@Base 3.0.0
  weston_layer_unset_position@Base 3.0.0
+ weston_linux_sync_file_read_timestamp@Base 7.0.0
  weston_load_module@Base 1.12.0
  weston_log@Base 1.12.0
  weston_log_continue@Base 1.12.0
+ weston_log_ctx_compositor_create@Base 7.0.0
+ weston_log_ctx_compositor_destroy@Base 7.0.0
+ weston_log_scope_complete@Base 7.0.0
+ weston_log_scope_is_enabled@Base 7.0.0
+ weston_log_scope_printf@Base 7.0.0
+ weston_log_scope_timestamp@Base 7.0.0
+ weston_log_scope_vprintf@Base 7.0.0
+ weston_log_scope_write@Base 7.0.0
  weston_log_set_handler@Base 1.12.0
+ weston_log_subscribe@Base 7.0.0
+ weston_log_subscriber_create_flight_rec@Base 7.0.0
+ weston_log_subscriber_create_log@Base 7.0.0
+ weston_log_subscriber_destroy_flight_rec@Base 7.0.0
+ weston_log_subscriber_destroy_log@Base 7.0.0
+ weston_log_subscriber_display_flight_rec@Base 7.0.0
+ weston_log_subscription_complete@Base 7.0.0
+ weston_log_subscription_printf@Base 7.0.0
  weston_matrix_init@Base 1.12.0
  weston_matrix_invert@Base 1.12.0
  weston_matrix_multiply@Base 1.12.0
@@ -161,6 +172,7 @@ libweston-7.so.0 libweston-7-0 #MINVER#
  weston_move_scale_run@Base 1.12.0
  weston_output_activate_zoom@Base 1.12.0
  weston_output_add_destroy_listener@Base 5.0.0
+ weston_output_allow_protection@Base 7.0.0
  weston_output_attach_head@Base 5.0.0
  weston_output_damage@Base 1.12.0
  weston_output_destroy@Base 5.0.0
