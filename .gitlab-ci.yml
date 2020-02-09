@@ -5,13 +5,13 @@ variables:
   DEBIAN_VERSION: buster
   DEBIAN_EXEC: 'bash .gitlab-ci/debian-install.sh'
 
-  DEBIAN_TAG: '2019-06-26.0'
+  DEBIAN_TAG: '2019-12-13.0'
   DEBIAN_CONTAINER_IMAGE: $CI_REGISTRY_IMAGE/debian/$DEBIAN_VERSION:$DEBIAN_TAG
 
 
 include:
   - project: 'wayland/ci-templates'
-    ref: c73dae8b84697ef18e2dbbf4fed7386d9652b0cd
+    ref: b7030c2cd0d6ccc5f6d4f8299bafa4daa9240d71
     file: '/templates/debian.yml'
 
 
@@ -47,12 +47,12 @@ container_prep:
   - export BUILDDIR="$(pwd)/build-$BUILD_ID"
   - mkdir "$BUILDDIR" "$PREFIX"
 
-build-native-meson:
+.build-native-meson:
   extends: .build-native
   script:
   - export PATH=~/.local/bin:$PATH
   - cd "$BUILDDIR"
-  - meson --prefix="$PREFIX" -Dsimple-dmabuf-drm=intel -Dwerror=true -Ddoc=true ..
+  - meson --prefix="$PREFIX" ${MESON_OPTIONS} ..
   - ninja -k0
   - ninja install
   - ninja test
@@ -64,12 +64,28 @@ build-native-meson:
     - build-*/meson-logs
     - prefix-*
 
+build-native-meson-default-options:
+  variables:
+    MESON_OPTIONS: >
+      -Dwerror=true
+      -Ddoc=true
+  extends: .build-native-meson
+
+build-native-meson-no-gl-renderer:
+  variables:
+    MESON_OPTIONS: >
+      -Dsimple-clients=damage,im,shm,touch,dmabuf-v4l
+      -Drenderer-gl=false
+      -Dremoting=false
+      -Dwerror=true
+  extends: .build-native-meson
+
 pages:
   stage: pages
   dependencies:
-    - build-native-meson
+    - build-native-meson-default-options
   script:
-  - export PREFIX=$(pwd)/prefix-weston-build-native-meson
+  - export PREFIX=$(pwd)/prefix-weston-build-native-meson-default-options
   - mkdir public
   - cp -R $PREFIX/share/doc/weston/* public/
   artifacts:
