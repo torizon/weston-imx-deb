@@ -1,5 +1,5 @@
-libweston-8.so.0 libweston-8-0 #MINVER#
-* Build-Depends-Package: libweston-8-dev
+libweston-9.so.0 libweston-9-0 #MINVER#
+* Build-Depends-Package: libweston-9-dev
  linux_dmabuf_buffer_get@Base 1.12.0
  linux_dmabuf_buffer_get_user_data@Base 1.12.0
  linux_dmabuf_buffer_send_server_error@Base 1.12.0

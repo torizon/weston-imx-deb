@@ -69,7 +69,7 @@ Description: reference implementation of a wayland compositor
  and fast compositor and is suitable for many embedded and mobile use
  cases.
 
-Package: libweston-8-0
+Package: libweston-9-0
 Section: libs
 Architecture: linux-any
 Depends: ${misc:Depends}, ${shlibs:Depends}
@@ -84,12 +84,12 @@ Description: reference implementation of a wayland compositor (shared libs)
  .
  This package includes the libweston shared libraries.
 
-Package: libweston-8-dev
+Package: libweston-9-dev
 Section: libdevel
 Architecture: linux-any
 Depends: libpixman-1-dev,
          libwayland-dev,
-         libweston-8-0 (= ${binary:Version}),
+         libweston-9-0 (= ${binary:Version}),
          libxkbcommon-dev,
          ${misc:Depends},
          ${shlibs:Depends}
