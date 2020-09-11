@@ -1,3 +1,9 @@
+weston (9.0.0-1) unstable; urgency=medium
+
+  * Release to unstable.
+
+ -- Héctor Orón Martínez <zumbi@debian.org>  Fri, 11 Sep 2020 12:57:05 +0200
+
 weston (9.0.0-1~exp1) experimental; urgency=medium
 
   * New upstream release
