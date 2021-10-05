@@ -56,9 +56,6 @@ Vcs-Browser: https://salsa.debian.org/xorg-team/wayland/weston
 Package: weston
 Architecture: linux-any
 Depends: adduser,
-         libegl1-mesa (>= 8.0-2) | libegl1-x11,
-         libgles2-mesa (>= 8.0-2) | libgles2,
-         libwayland-egl1-mesa (>= 10.1.0-2) | libwayland-egl1,
          ${misc:Depends},
          ${shlibs:Depends}
 Breaks: libweston-8-dev
