@@ -1,3 +1,9 @@
+weston (9.0.93-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+
+ -- Héctor Orón Martínez <zumbi@debian.org>  Tue, 01 Feb 2022 18:25:07 +0100
+
 weston (9.0.0-4) unstable; urgency=high
 
   * debian/rules: make tests non fatal
