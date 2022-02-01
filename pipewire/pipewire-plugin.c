@@ -129,7 +129,6 @@ pipewire_debug_impl(struct weston_pipewire *pipewire,
 	free(logstr);
 }
 
-#if !PW_CHECK_VERSION(0, 2, 90)
 static void
 pipewire_output_debug(struct pipewire_output *output, const char *fmt, ...)
 {
@@ -379,7 +378,6 @@ pipewire_output_connect(struct pipewire_output *output)
 				(PW_STREAM_FLAG_DRIVER |
 				 PW_STREAM_FLAG_MAP_BUFFERS),
 				params, 1);
-#endif
 	if (ret != 0) {
 		weston_log("Failed to connect pipewire stream: %s",
 			   spa_strerror(ret));
@@ -674,27 +672,17 @@ weston_pipewire_loop_handler(int fd, uint32_t mask, void *data)
 	return 0;
 }
 
-#if PW_CHECK_VERSION(0, 2, 90)
 static void
 weston_pipewire_error(void *data, uint32_t id, int seq, int res,
 			      const char *error)
 {
 	weston_log("pipewire remote error: %s\n", error);
 }
-#else
-static void
-weston_pipewire_error(void *data, uint32_t id, int seq, int res,
-			      const char *error)
-{
-	weston_log("pipewire remote error: %s\n", error);
-}
-#endif
 
 static const struct pw_core_events core_events = {
 	PW_VERSION_CORE_EVENTS,
 	.error = weston_pipewire_error,
 };
-#endif
 
 static int
 weston_pipewire_init(struct weston_pipewire *pipewire)
