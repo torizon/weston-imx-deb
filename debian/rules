@@ -2,7 +2,7 @@
 
 override_dh_auto_configure:
 	dh_auto_configure -- -Dscreenshare=true \
-		-Dsystemd=true -Dsimple-dmabuf-drm=auto
+		-Dsystemd=true
 
 override_dh_auto_test:
 	mkdir -p $(CURDIR)/debian/tmp/tmp/xdgruntimedir
