@@ -1,3 +1,15 @@
+weston (10.0.1-1+toradex1) bookworm; urgency=medium
+
+  * .github/workflows/deb-builder.yml: add workflow for building the package.
+  * debian/control: add libseat-dev to Build-Depends.
+  * debian/rules: add support for libseat to weston.
+  * debian/source/:
+      - format: convert to source format 3.0 (quilt) from 1.0.
+      - options: make dpkg-source ignore our github workflow folder.
+  * debian/toradex-ci.yml: add salsa-ci tests for weston.
+
+ -- Carlos Henrique Lima Melara <carlos.melara@toradex.com>  Wed, 07 Feb 2024 11:32:32 -0300
+
 weston (10.0.1-1) unstable; urgency=medium
 
   * New upstream release.
