@@ -21,14 +21,12 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Build Debian Package
-        uses: leonheldattoradex/build-deb-action@v1.7.1
+        uses: jtdor/build-deb-action@v1
         env:
           DEB_BUILD_OPTIONS: noautodbgsym
         with:
           buildpackage-opts: --build=binary --no-sign
           extra-docker-args: --platform ${{ matrix.arch }}
-          apt-opts: --install-recommends
-          extra-build-deps: ca-certificates
           docker-image: ${{ matrix.os }}
 
       - name: Generating artifact directory name
