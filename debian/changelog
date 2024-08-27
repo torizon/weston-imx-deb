@@ -1,3 +1,10 @@
+weston (12.0.3-1) bookworm; urgency=medium
+
+  [ Leonardo Held ]
+  * Import new release 12.0.3
+
+ -- Leonardo Held  <leonardo.held@toradex.com>  Mon, 26 Aug 2024 22:02:49 -0300
+
 weston (10.0.1-1+toradex1) bookworm; urgency=medium
 
   * .github/workflows/deb-builder.yml: add workflow for building the package.
