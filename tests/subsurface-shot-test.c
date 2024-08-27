@@ -35,16 +35,16 @@
 
 struct setup_args {
 	struct fixture_metadata meta;
-	enum renderer_type renderer;
+	enum weston_renderer_type renderer;
 };
 
 static const struct setup_args my_setup_args[] = {
 	{
-		.renderer = RENDERER_PIXMAN,
+		.renderer = WESTON_RENDERER_PIXMAN,
 		.meta.name = "pixman"
 	},
 	{
-		.renderer = RENDERER_GL,
+		.renderer = WESTON_RENDERER_GL,
 		.meta.name = "GL"
 	},
 };
@@ -103,7 +103,7 @@ check_screen(struct client *client,
 	bool match;
 
 	match = verify_screen_content(client, ref_image, ref_seq_no, clip,
-				      seq_no);
+				      seq_no, NULL);
 
 	return match ? 0 : -1;
 }
@@ -287,6 +287,7 @@ TEST(subsurface_empty_mapping)
 	struct wl_subcompositor *subco;
 	struct wp_viewporter *viewporter;
 	struct buffer *bufs[3] = { 0 };
+	struct buffer *buf_tmp;
 	struct wl_surface *surf[3] = { 0 };
 	struct wl_subsurface *sub[3] = { 0 };
 	struct wp_viewport *viewport;
@@ -385,7 +386,9 @@ TEST(subsurface_empty_mapping)
 	fail += check_screen(client, "subsurface_empty_mapping", 0, &clip, 10);
 
 	/* remap middle surface to ensure recursive mapping */
+	buf_tmp = bufs[1];
 	bufs[1] = surface_commit_color(client, surf[1], &blue, 100, 100);
+	buffer_destroy(buf_tmp);
 
 	fail += check_screen(client, "subsurface_empty_mapping", 1, &clip, 11);
 

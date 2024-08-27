@@ -35,26 +35,6 @@ extern "C" {
 
 #define WESTON_CONFIG_FILE_ENV_VAR "WESTON_CONFIG_FILE"
 
-enum config_key_type {
-	CONFIG_KEY_INTEGER,		/* typeof data = int */
-	CONFIG_KEY_UNSIGNED_INTEGER,	/* typeof data = unsigned int */
-	CONFIG_KEY_STRING,		/* typeof data = char* */
-	CONFIG_KEY_BOOLEAN		/* typeof data = int */
-};
-
-struct config_key {
-	const char *name;
-	enum config_key_type type;
-	void *data;
-};
-
-struct config_section {
-	const char *name;
-	const struct config_key *keys;
-	int num_keys;
-	void (*done)(void *data);
-};
-
 enum weston_option_type {
 	WESTON_OPTION_INTEGER,
 	WESTON_OPTION_UNSIGNED_INTEGER,
@@ -108,6 +88,12 @@ weston_config_section_get_bool(struct weston_config_section *section,
 const char *
 weston_config_get_name_from_env(void);
 
+void
+weston_config_set_env(struct weston_config_section *section);
+
+struct weston_config *
+weston_config_parse_fp(FILE *file);
+
 struct weston_config *
 weston_config_parse(const char *name);
 
@@ -121,10 +107,11 @@ int weston_config_next_section(struct weston_config *config,
 			       struct weston_config_section **section,
 			       const char **name);
 
+uint32_t
+weston_config_get_binding_modifier(struct weston_config *config, uint32_t default_mod);
 
 #ifdef  __cplusplus
 }
 #endif
 
 #endif /* CONFIGPARSER_H */
-

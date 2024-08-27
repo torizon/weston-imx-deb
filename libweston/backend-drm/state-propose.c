@@ -41,6 +41,7 @@
 #include "color.h"
 #include "linux-dmabuf.h"
 #include "presentation-time-server-protocol.h"
+#include "linux-dmabuf-unstable-v1-server-protocol.h"
 
 enum drm_output_propose_state_mode {
 	DRM_OUTPUT_PROPOSE_STATE_MIXED, /**< mix renderer & planes */
@@ -63,55 +64,6 @@ drm_propose_state_mode_to_string(enum drm_output_propose_state_mode mode)
 	return drm_output_propose_state_mode_as_string[mode];
 }
 
-static void
-drm_output_add_zpos_plane(struct drm_plane *plane, struct wl_list *planes)
-{
-	struct drm_backend *b = plane->backend;
-	struct drm_plane_zpos *h_plane;
-	struct drm_plane_zpos *plane_zpos;
-
-	plane_zpos = zalloc(sizeof(*plane_zpos));
-	if (!plane_zpos)
-		return;
-
-	plane_zpos->plane = plane;
-
-	drm_debug(b, "\t\t\t\t[plane] plane %d added to candidate list\n",
-		      plane->plane_id);
-
-	if (wl_list_empty(planes)) {
-		wl_list_insert(planes, &plane_zpos->link);
-		return;
-	}
-
-	h_plane = wl_container_of(planes->next, h_plane, link);
-	if (h_plane->plane->zpos_max >= plane->zpos_max) {
-		wl_list_insert(planes->prev, &plane_zpos->link);
-	} else {
-		struct drm_plane_zpos *p_zpos = NULL;
-
-		if (wl_list_length(planes) == 1) {
-			wl_list_insert(planes->prev, &plane_zpos->link);
-			return;
-		}
-
-		wl_list_for_each(p_zpos, planes, link) {
-			if (p_zpos->plane->zpos_max >
-			    plane_zpos->plane->zpos_max)
-				break;
-		}
-
-		wl_list_insert(p_zpos->link.prev, &plane_zpos->link);
-	}
-}
-
-static void
-drm_output_destroy_zpos_plane(struct drm_plane_zpos *plane_zpos)
-{
-	wl_list_remove(&plane_zpos->link);
-	free(plane_zpos);
-}
-
 static bool
 drm_output_check_plane_has_view_assigned(struct drm_plane *plane,
                                          struct drm_output_state *output_state)
@@ -125,87 +77,81 @@ drm_output_check_plane_has_view_assigned(struct drm_plane *plane,
 }
 
 static struct drm_plane_state *
-drm_output_prepare_overlay_view(struct drm_plane *plane,
-				struct drm_output_state *output_state,
-				struct weston_view *ev,
-				enum drm_output_propose_state_mode mode,
-				struct drm_fb *fb, uint64_t zpos)
+drm_output_try_paint_node_on_plane(struct drm_plane *plane,
+				   struct drm_output_state *output_state,
+				   struct weston_paint_node *node,
+				   enum drm_output_propose_state_mode mode,
+				   struct drm_fb *fb, uint64_t zpos)
 {
 	struct drm_output *output = output_state->output;
-	struct weston_compositor *ec = output->base.compositor;
-	struct drm_backend *b = to_drm_backend(ec);
+	struct weston_view *ev = node->view;
+	struct weston_surface *surface = ev->surface;
+	struct drm_device *device = output->device;
+	struct drm_backend *b = device->backend;
 	struct drm_plane_state *state = NULL;
-	int ret;
 
-	assert(!b->sprites_are_broken);
-	assert(b->atomic_modeset);
-
-	if (!fb) {
-		drm_debug(b, "\t\t\t\t[overlay] not placing view %p on overlay: "
-			     " couldn't get fb\n", ev);
-		return NULL;
-	}
+	assert(!device->sprites_are_broken);
+	assert(device->atomic_modeset);
+	assert(fb);
+	assert(mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY ||
+	       (mode == DRM_OUTPUT_PROPOSE_STATE_MIXED &&
+	        plane->type == WDRM_PLANE_TYPE_OVERLAY));
 
 	state = drm_output_state_get_plane(output_state, plane);
 	/* we can't have a 'pending' framebuffer as never set one before reaching here */
 	assert(!state->fb);
-
-	state->ev = ev;
 	state->output = output;
 
-	if (!drm_plane_state_coords_for_view(state, ev, zpos)) {
-		drm_debug(b, "\t\t\t\t[overlay] not placing view %p on overlay: "
+	if (!drm_plane_state_coords_for_paint_node(state, node, zpos)) {
+		drm_debug(b, "\t\t\t\t[view] not placing view %p on plane: "
 			     "unsuitable transform\n", ev);
-		drm_plane_state_put_back(state);
-		state = NULL;
 		goto out;
 	}
 
-	/* If the surface buffer has an in-fence fd, but the plane
-	 * doesn't support fences, we can't place the buffer on this
-	 * plane. */
-	if (ev->surface->acquire_fence_fd >= 0 &&
-	     plane->props[WDRM_PLANE_IN_FENCE_FD].prop_id == 0) {
-		drm_debug(b, "\t\t\t\t[overlay] not placing view %p on overlay: "
-			     "no in-fence support\n", ev);
-		drm_plane_state_put_back(state);
-		state = NULL;
-		goto out;
+	/* Should've been ensured by weston_view_matches_entire_output. */
+	if (plane->type == WDRM_PLANE_TYPE_PRIMARY) {
+		assert(state->dest_x == 0 && state->dest_y == 0 &&
+		       state->dest_w == (unsigned) output->base.current_mode->width &&
+		       state->dest_h == (unsigned) output->base.current_mode->height);
 	}
 
 	/* We hold one reference for the lifetime of this function; from
-	 * calling drm_fb_get_from_view() in drm_output_prepare_plane_view(),
-	 * so, we take another reference here to live within the state. */
+	 * calling drm_fb_get_from_paint_node() in
+	 * drm_output_prepare_plane_view(), so, we take another reference
+	 * here to live within the state. */
+	state->ev = ev;
 	state->fb = drm_fb_ref(fb);
-
 	state->in_fence_fd = ev->surface->acquire_fence_fd;
 
 	/* In planes-only mode, we don't have an incremental state to
 	 * test against, so we just hope it'll work. */
-	if (mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY) {
-		drm_debug(b, "\t\t\t[overlay] provisionally placing "
-			     "view %p on overlay %lu in planes-only mode\n",
+	if (mode != DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY &&
+	    drm_pending_state_test(output_state->pending_state) != 0) {
+		drm_debug(b, "\t\t\t[view] not placing view %p on plane %lu: "
+		             "atomic test failed\n",
 			  ev, (unsigned long) plane->plane_id);
 		goto out;
 	}
 
-	ret = drm_pending_state_test(output_state->pending_state);
-	if (ret == 0) {
-		drm_debug(b, "\t\t\t[overlay] provisionally placing "
-			     "view %p on overlay %d in mixed mode\n",
-			  ev, plane->plane_id);
-		goto out;
-	}
-
-	drm_debug(b, "\t\t\t[overlay] not placing view %p on overlay %lu "
-		     "in mixed mode: kernel test failed\n",
+	drm_debug(b, "\t\t\t[view] provisionally placing view %p on plane %lu\n",
 		  ev, (unsigned long) plane->plane_id);
 
-	drm_plane_state_put_back(state);
-	state = NULL;
+	/* Take a reference on the buffer so that we don't release it
+	 * back to the client until we're done with it; cursor buffers
+	 * don't require a reference since we copy them. */
+	assert(state->fb_ref.buffer.buffer == NULL);
+	assert(state->fb_ref.release.buffer_release == NULL);
+	weston_buffer_reference(&state->fb_ref.buffer,
+				surface->buffer_ref.buffer,
+				BUFFER_MAY_BE_ACCESSED);
+	weston_buffer_release_reference(&state->fb_ref.release,
+					surface->buffer_release_ref.buffer_release);
+
+	return state;
 
 out:
-	return state;
+	drm_plane_state_put_back(state);
+	return NULL;
 }
 
 #ifdef BUILD_DRM_GBM
@@ -218,18 +164,18 @@ out:
 static void
 cursor_bo_update(struct drm_plane_state *plane_state, struct weston_view *ev)
 {
-	struct drm_backend *b = plane_state->plane->backend;
+	struct drm_output *output = plane_state->output;
+	struct drm_device *device = output->device;
 	struct gbm_bo *bo = plane_state->fb->bo;
 	struct weston_buffer *buffer = ev->surface->buffer_ref.buffer;
-	uint32_t buf[b->cursor_width * b->cursor_height];
+	uint32_t buf[device->cursor_width * device->cursor_height];
 	int32_t stride;
 	uint8_t *s;
 	int i;
 
 	assert(buffer && buffer->shm_buffer);
-	assert(buffer->shm_buffer == wl_shm_buffer_get(buffer->resource));
-	assert(buffer->width <= b->cursor_width);
-	assert(buffer->height <= b->cursor_height);
+	assert(buffer->width <= device->cursor_width);
+	assert(buffer->height <= device->cursor_height);
 
 	memset(buf, 0, sizeof buf);
 	stride = wl_shm_buffer_get_stride(buffer->shm_buffer);
@@ -237,69 +183,57 @@ cursor_bo_update(struct drm_plane_state *plane_state, struct weston_view *ev)
 
 	wl_shm_buffer_begin_access(buffer->shm_buffer);
 	for (i = 0; i < buffer->height; i++)
-		memcpy(buf + i * b->cursor_width,
+		memcpy(buf + i * device->cursor_width,
 		       s + i * stride,
 		       buffer->width * 4);
 	wl_shm_buffer_end_access(buffer->shm_buffer);
 
-	if (gbm_bo_write(bo, buf, sizeof buf) < 0)
-		weston_log("failed update cursor: %s\n", strerror(errno));
+	if (bo) {
+		if (gbm_bo_write(bo, buf, sizeof buf) < 0)
+			weston_log("failed update cursor: %s\n", strerror(errno));
+	} else {
+		memcpy(output->gbm_cursor_fb[output->current_cursor]->map,
+		       buf, sizeof buf);
+	}
 }
 
 static struct drm_plane_state *
-drm_output_prepare_cursor_view(struct drm_output_state *output_state,
-			       struct weston_view *ev, uint64_t zpos)
+drm_output_prepare_cursor_paint_node(struct drm_output_state *output_state,
+				     struct weston_paint_node *node,
+				     uint64_t zpos)
 {
 	struct drm_output *output = output_state->output;
-	struct drm_backend *b = to_drm_backend(output->base.compositor);
+	struct drm_device *device = output->device;
+	struct drm_backend *b = device->backend;
 	struct drm_plane *plane = output->cursor_plane;
+	struct weston_view *ev = node->view;
 	struct drm_plane_state *plane_state;
 	bool needs_update = false;
-	struct weston_buffer *buffer = ev->surface->buffer_ref.buffer;
 	const char *p_name = drm_output_get_plane_type_name(plane);
 
-	assert(!b->cursors_are_broken);
-
-	if (!plane)
-		return NULL;
-
-	if (!plane->state_cur->complete)
-		return NULL;
-
-	if (plane->state_cur->output && plane->state_cur->output != output)
-		return NULL;
+	assert(!device->cursors_are_broken);
+	assert(plane);
+	assert(plane->state_cur->complete);
+	assert(!plane->state_cur->output || plane->state_cur->output == output);
 
 	/* We use GBM to import SHM buffers. */
-	if (b->gbm == NULL)
-		return NULL;
+	assert(b->gbm);
 
 	plane_state = drm_output_state_get_plane(output_state, plane);
-
-	if (plane_state && plane_state->fb)
-		return NULL;
+	assert(!plane_state->fb);
 
 	/* We can't scale with the legacy API, and we don't try to account for
 	 * simple cropping/translation in cursor_bo_update. */
 	plane_state->output = output;
-	if (!drm_plane_state_coords_for_view(plane_state, ev, zpos)) {
+	if (!drm_plane_state_coords_for_paint_node(plane_state, node, zpos)) {
 		drm_debug(b, "\t\t\t\t[%s] not placing view %p on %s: "
 			     "unsuitable transform\n", p_name, ev, p_name);
 		goto err;
 	}
 
-	if (buffer->width > b->cursor_width ||
-	    buffer->height > b->cursor_height) {
-		drm_debug(b, "\t\t\t\t[%s] not assigning view %p to %s plane "
-			     "(surface buffer (%dx%d) larger than permitted"
-			     " (%dx%d))\n", p_name, ev, p_name,
-			     buffer->width, buffer->height,
-			     b->cursor_width, b->cursor_height);
-		goto err;
-	}
-
 	if (plane_state->src_x != 0 || plane_state->src_y != 0 ||
-	    plane_state->src_w > (unsigned) b->cursor_width << 16 ||
-	    plane_state->src_h > (unsigned) b->cursor_height << 16 ||
+	    plane_state->src_w > (unsigned) device->cursor_width << 16 ||
+	    plane_state->src_h > (unsigned) device->cursor_height << 16 ||
 	    plane_state->src_w != plane_state->dest_w << 16 ||
 	    plane_state->src_h != plane_state->dest_h << 16) {
 		drm_debug(b, "\t\t\t\t[%s] not assigning view %p to %s plane "
@@ -338,10 +272,10 @@ drm_output_prepare_cursor_view(struct drm_output_state *output_state,
 	 * a buffer which is always cursor_width x cursor_height, even if the
 	 * surface we want to promote is actually smaller than this. Manually
 	 * mangle the plane state to deal with this. */
-	plane_state->src_w = b->cursor_width << 16;
-	plane_state->src_h = b->cursor_height << 16;
-	plane_state->dest_w = b->cursor_width;
-	plane_state->dest_h = b->cursor_height;
+	plane_state->src_w = device->cursor_width << 16;
+	plane_state->src_h = device->cursor_height << 16;
+	plane_state->dest_w = device->cursor_width;
+	plane_state->dest_h = device->cursor_height;
 
 	drm_debug(b, "\t\t\t\t[%s] provisionally assigned view %p to cursor\n",
 		  p_name, ev);
@@ -354,196 +288,13 @@ err:
 }
 #else
 static struct drm_plane_state *
-drm_output_prepare_cursor_view(struct drm_output_state *output_state,
-			       struct weston_view *ev, uint64_t zpos)
+drm_output_prepare_cursor_paint_node(struct drm_output_state *output_state,
+				     struct weston_paint_node *node,
+				     uint64_t zpos)
 {
 	return NULL;
 }
 #endif
-
-static struct drm_plane_state *
-drm_output_prepare_scanout_view(struct drm_output_state *output_state,
-				struct weston_view *ev,
-				enum drm_output_propose_state_mode mode,
-				struct drm_fb *fb, uint64_t zpos)
-{
-	struct drm_output *output = output_state->output;
-	struct drm_backend *b = to_drm_backend(output->base.compositor);
-	struct drm_plane *scanout_plane = output->scanout_plane;
-	struct drm_plane_state *state;
-	const char *p_name = drm_output_get_plane_type_name(scanout_plane);
-
-	assert(!b->sprites_are_broken);
-	assert(b->atomic_modeset);
-	assert(mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY);
-
-	/* Check the view spans exactly the output size, calculated in the
-	 * logical co-ordinate space. */
-	if (!weston_view_matches_output_entirely(ev, &output->base)) {
-		drm_debug(b, "\t\t\t\t[%s] not placing view %p on %s: "
-			     " view does not match output entirely\n",
-			     p_name, ev, p_name);
-		return NULL;
-	}
-
-	/* If the surface buffer has an in-fence fd, but the plane doesn't
-	 * support fences, we can't place the buffer on this plane. */
-	if (ev->surface->acquire_fence_fd >= 0 &&
-	    scanout_plane->props[WDRM_PLANE_IN_FENCE_FD].prop_id == 0) {
-		drm_debug(b, "\t\t\t\t[%s] not placing view %p on %s: "
-			     "no in-fence support\n", p_name, ev, p_name);
-		return NULL;
-	}
-
-	if (!fb) {
-		drm_debug(b, "\t\t\t\t[%s] not placing view %p on %s: "
-			     " couldn't get fb\n", p_name, ev, p_name);
-		return NULL;
-	}
-
-	state = drm_output_state_get_plane(output_state, scanout_plane);
-
-	/* The only way we can already have a buffer in the scanout plane is
-	 * if we are in mixed mode, or if a client buffer has already been
-	 * placed into scanout. The former case will never call into here,
-	 * and in the latter case, the view must have been marked as occluded,
-	 * meaning we should never have ended up here. */
-	assert(!state->fb);
-
-	/* take another reference here to live within the state */
-	state->fb = drm_fb_ref(fb);
-	state->ev = ev;
-	state->output = output;
-	if (!drm_plane_state_coords_for_view(state, ev, zpos)) {
-		drm_debug(b, "\t\t\t\t[%s] not placing view %p on %s: "
-			     "unsuitable transform\n", p_name, ev, p_name);
-		goto err;
-	}
-
-	if (state->dest_x != 0 || state->dest_y != 0 ||
-	    state->dest_w != (unsigned) output->base.current_mode->width ||
-	    state->dest_h != (unsigned) output->base.current_mode->height) {
-		drm_debug(b, "\t\t\t\t[%s] not placing view %p on %s: "
-			     " invalid plane state\n", p_name, ev, p_name);
-		goto err;
-	}
-
-	state->in_fence_fd = ev->surface->acquire_fence_fd;
-
-	/* In plane-only mode, we don't need to test the state now, as we
-	 * will only test it once at the end. */
-	return state;
-
-err:
-	drm_plane_state_put_back(state);
-	return NULL;
-}
-
-static struct drm_plane_state *
-drm_output_try_view_on_plane(struct drm_plane *plane,
-			     struct drm_output_state *state,
-			     struct weston_view *ev,
-			     enum drm_output_propose_state_mode mode,
-			     struct drm_fb *fb, uint64_t zpos)
-{
-	struct drm_backend *b = state->pending_state->backend;
-	struct weston_output *wet_output = &state->output->base;
-	bool view_matches_entire_output, scanout_has_view_assigned;
-	struct drm_plane *scanout_plane = state->output->scanout_plane;
-	struct drm_plane_state *ps = NULL;
-	const char *p_name = drm_output_get_plane_type_name(plane);
-	struct weston_surface *surface = ev->surface;
-	enum {
-		NO_PLANES,	/* generic err-handle */
-		NO_PLANES_ACCEPTED,
-		PLACED_ON_PLANE,
-	} availability = NO_PLANES;
-
-	/* sanity checks in case we over/underflow zpos or pass incorrect
-	 * values */
-	assert(zpos <= plane->zpos_max ||
-	       zpos != DRM_PLANE_ZPOS_INVALID_PLANE);
-
-	switch (plane->type) {
-	case WDRM_PLANE_TYPE_CURSOR:
-		if (b->cursors_are_broken) {
-			availability = NO_PLANES_ACCEPTED;
-			goto out;
-		}
-
-		ps = drm_output_prepare_cursor_view(state, ev, zpos);
-		if (ps)
-			availability = PLACED_ON_PLANE;
-		break;
-	case WDRM_PLANE_TYPE_OVERLAY:
-		/* do not attempt to place it in the overlay if we don't have
-		 * anything in the scanout/primary and the view doesn't cover
-		 * the entire output  */
-		view_matches_entire_output =
-			weston_view_matches_output_entirely(ev, wet_output);
-		scanout_has_view_assigned =
-			drm_output_check_plane_has_view_assigned(scanout_plane,
-								 state);
-
-		if (view_matches_entire_output && !scanout_has_view_assigned) {
-			availability = NO_PLANES_ACCEPTED;
-			goto out;
-		}
-
-		ps = drm_output_prepare_overlay_view(plane, state, ev, mode,
-						     fb, zpos);
-		if (ps)
-			availability = PLACED_ON_PLANE;
-		break;
-	case WDRM_PLANE_TYPE_PRIMARY:
-		if (mode != DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY) {
-			availability = NO_PLANES_ACCEPTED;
-			goto out;
-		}
-
-		ps = drm_output_prepare_scanout_view(state, ev, mode,
-						     fb, zpos);
-		if (ps)
-			availability = PLACED_ON_PLANE;
-		break;
-	default:
-		assert(0);
-		break;
-	}
-
-out:
-	switch (availability) {
-	case NO_PLANES:
-		/* set initial to this catch-all case, such that
-		 * prepare_cursor/overlay/scanout() should have/contain the
-		 * reason for failling */
-		break;
-	case NO_PLANES_ACCEPTED:
-		drm_debug(b, "\t\t\t\t[plane] plane %d refusing to "
-			     "place view %p in %s\n",
-			     plane->plane_id, ev, p_name);
-		break;
-	case PLACED_ON_PLANE:
-		/* Take a reference on the buffer so that we don't release it
-		 * back to the client until we're done with it; cursor buffers
-		 * don't require a reference since we copy them. */
-		assert(ps->fb_ref.buffer.buffer == NULL);
-		assert(ps->fb_ref.release.buffer_release == NULL);
-		if (ps->plane->type == WDRM_PLANE_TYPE_CURSOR) {
-			assert(ps->fb->type == BUFFER_CURSOR);
-		} else if (fb->type == BUFFER_CLIENT || fb->type == BUFFER_DMABUF) {
-			assert(ps->fb == fb);
-			weston_buffer_reference(&ps->fb_ref.buffer,
-						surface->buffer_ref.buffer);
-			weston_buffer_release_reference(&ps->fb_ref.release,
-							surface->buffer_release_ref.buffer_release);
-		}
-		break;
-	}
-
-
-	return ps;
-}
 
 static void
 drm_output_check_zpos_plane_states(struct drm_output_state *state)
@@ -584,30 +335,18 @@ drm_output_check_zpos_plane_states(struct drm_output_state *state)
 	}
 }
 
-static bool
-dmabuf_feedback_maybe_update(struct drm_backend *b, struct weston_view *ev,
+static void
+dmabuf_feedback_maybe_update(struct drm_device *device, struct weston_view *ev,
 			     uint32_t try_view_on_plane_failure_reasons)
 {
 	struct weston_dmabuf_feedback *dmabuf_feedback = ev->surface->dmabuf_feedback;
 	struct weston_dmabuf_feedback_tranche *scanout_tranche;
-	dev_t scanout_dev = b->drm.devnum;
+	struct drm_backend *b = device->backend;
+	dev_t scanout_dev = device->drm.devnum;
 	uint32_t scanout_flags = ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT;
-	uint32_t action_needed = ACTION_NEEDED_NONE;
+	enum actions_needed_dmabuf_feedback action_needed = ACTION_NEEDED_NONE;
 	struct timespec current_time, delta_time;
 	const time_t MAX_TIME_SECONDS = 2;
-
-	/* Find out what we need to do with the dma-buf feedback */
-	if (try_view_on_plane_failure_reasons & FAILURE_REASONS_FORCE_RENDERER)
-		action_needed |= ACTION_NEEDED_REMOVE_SCANOUT_TRANCHE;
-	if (try_view_on_plane_failure_reasons &
-		(FAILURE_REASONS_ADD_FB_FAILED |
-		 FAILURE_REASONS_FB_FORMAT_INCOMPATIBLE |
-		 FAILURE_REASONS_DMABUF_MODIFIER_INVALID |
-		 FAILURE_REASONS_GBM_BO_IMPORT_FAILED))
-		action_needed |= ACTION_NEEDED_ADD_SCANOUT_TRANCHE;
-
-	assert(action_needed != (ACTION_NEEDED_REMOVE_SCANOUT_TRANCHE |
-				 ACTION_NEEDED_ADD_SCANOUT_TRANCHE));
 
 	/* Look for scanout tranche. If not found, add it but in disabled mode
 	 * (we still don't know if we'll have to send it to clients). This
@@ -619,19 +358,34 @@ dmabuf_feedback_maybe_update(struct drm_backend *b, struct weston_view *ev,
 		scanout_tranche =
 			weston_dmabuf_feedback_tranche_create(dmabuf_feedback,
 					b->compositor->dmabuf_feedback_format_table,
-					scanout_dev, scanout_flags,
-					SCANOUT_PREF);
+					scanout_dev, scanout_flags, SCANOUT_PREF);
 		scanout_tranche->active = false;
+	}
+
+	/* Direct scanout won't happen even if client re-allocates using
+	 * params from the scanout tranche, so keep only the renderer tranche. */
+	if (try_view_on_plane_failure_reasons & (FAILURE_REASONS_FORCE_RENDERER |
+						 FAILURE_REASONS_NO_PLANES_AVAILABLE)) {
+		action_needed = ACTION_NEEDED_REMOVE_SCANOUT_TRANCHE;
+	/* Direct scanout may be possible if client re-allocates using the
+	 * params from the scanout tranche. */
+	} else if (try_view_on_plane_failure_reasons & (FAILURE_REASONS_ADD_FB_FAILED |
+							FAILURE_REASONS_FB_FORMAT_INCOMPATIBLE |
+							FAILURE_REASONS_DMABUF_MODIFIER_INVALID |
+							FAILURE_REASONS_GBM_BO_IMPORT_FAILED |
+							FAILURE_REASONS_GBM_BO_GET_HANDLE_FAILED)) {
+		action_needed = ACTION_NEEDED_ADD_SCANOUT_TRANCHE;
+	/* Direct scanout is already possible, so include the scanout tranche. */
+	} else if (try_view_on_plane_failure_reasons == FAILURE_REASONS_NONE) {
+		action_needed = ACTION_NEEDED_ADD_SCANOUT_TRANCHE;
 	}
 
 	/* No actions needed, so disarm timer and return */
 	if (action_needed == ACTION_NEEDED_NONE ||
-	    (action_needed == ACTION_NEEDED_ADD_SCANOUT_TRANCHE &&
-	     scanout_tranche->active) ||
-	    (action_needed == ACTION_NEEDED_REMOVE_SCANOUT_TRANCHE &&
-	     !scanout_tranche->active)) {
+	    (action_needed == ACTION_NEEDED_ADD_SCANOUT_TRANCHE && scanout_tranche->active) ||
+	    (action_needed == ACTION_NEEDED_REMOVE_SCANOUT_TRANCHE && !scanout_tranche->active)) {
 		dmabuf_feedback->action_needed = ACTION_NEEDED_NONE;
-		return false;
+		return;
 	}
 
 	/* We hit this if:
@@ -646,7 +400,7 @@ dmabuf_feedback_maybe_update(struct drm_backend *b, struct weston_view *ev,
 	    dmabuf_feedback->action_needed != action_needed) {
 		clock_gettime(CLOCK_MONOTONIC, &dmabuf_feedback->timer);
 		dmabuf_feedback->action_needed = action_needed;
-		return false;
+		return;
 	/* Timer is already on and the action needed when it was set to on does
 	 * not conflict with the most recent needed action we've detected. If
 	 * more than MAX_TIME_SECONDS has passed, we need to resend the dma-buf
@@ -656,7 +410,7 @@ dmabuf_feedback_maybe_update(struct drm_backend *b, struct weston_view *ev,
 		delta_time.tv_sec = current_time.tv_sec -
 				    dmabuf_feedback->timer.tv_sec;
 		if (delta_time.tv_sec < MAX_TIME_SECONDS)
-			return false;
+			return;
 	}
 
 	/* If we got here it means that the timer has triggered, so we have
@@ -676,118 +430,184 @@ dmabuf_feedback_maybe_update(struct drm_backend *b, struct weston_view *ev,
 
 	/* Set the timer to off */
 	dmabuf_feedback->action_needed = ACTION_NEEDED_NONE;
-
-	return true;
 }
 
 static struct drm_plane_state *
-drm_output_prepare_plane_view(struct drm_output_state *state,
-			      struct weston_view *ev,
-			      enum drm_output_propose_state_mode mode,
-			      struct drm_plane_state *scanout_state,
-			      uint64_t current_lowest_zpos,
-			      uint32_t *try_view_on_plane_failure_reasons)
+drm_output_find_plane_for_view(struct drm_output_state *state,
+			       struct weston_paint_node *pnode,
+			       enum drm_output_propose_state_mode mode,
+			       struct drm_plane_state *scanout_state,
+			       uint64_t current_lowest_zpos)
 {
 	struct drm_output *output = state->output;
-	struct drm_backend *b = to_drm_backend(output->base.compositor);
+	struct drm_device *device = output->device;
+	struct drm_backend *b = device->backend;
 
 	struct drm_plane_state *ps = NULL;
 	struct drm_plane *plane;
-	struct drm_plane_zpos *p_zpos, *p_zpos_next;
-	struct wl_list zpos_candidate_list;
 
+	struct weston_view *ev = pnode->view;
 	struct weston_buffer *buffer;
-	struct wl_shm_buffer *shmbuf;
-	struct drm_fb *fb;
+	struct drm_fb *fb = NULL;
 
-	wl_list_init(&zpos_candidate_list);
+	bool view_matches_entire_output, scanout_has_view_assigned;
+	uint32_t possible_plane_mask = 0;
+
+	pnode->try_view_on_plane_failure_reasons = FAILURE_REASONS_NONE;
 
 	/* check view for valid buffer, doesn't make sense to even try */
-	if (!weston_view_has_valid_buffer(ev))
-		return ps;
+	if (!weston_view_has_valid_buffer(ev)) {
+		pnode->try_view_on_plane_failure_reasons |=
+			FAILURE_REASONS_FB_FORMAT_INCOMPATIBLE;
+		return NULL;
+	}
 
 	buffer = ev->surface->buffer_ref.buffer;
-	shmbuf = wl_shm_buffer_get(buffer->resource);
-	fb = drm_fb_get_from_view(state, ev, try_view_on_plane_failure_reasons);
-	if (!shmbuf && !fb)
+	if (buffer->type == WESTON_BUFFER_SOLID) {
+		pnode->try_view_on_plane_failure_reasons |=
+			FAILURE_REASONS_FB_FORMAT_INCOMPATIBLE;
 		return NULL;
+	} else if (buffer->type == WESTON_BUFFER_SHM) {
+		if (!output->cursor_plane || device->cursors_are_broken) {
+			pnode->try_view_on_plane_failure_reasons |=
+				FAILURE_REASONS_FB_FORMAT_INCOMPATIBLE;
+			return NULL;
+		}
+
+		/* Even though this is a SHM buffer, pixel_format stores the
+		 * format code as DRM FourCC */
+		if (buffer->pixel_format->format != DRM_FORMAT_ARGB8888) {
+			drm_debug(b, "\t\t\t\t[view] not placing view %p on "
+			             "plane; SHM buffers must be ARGB8888 for "
+				     "cursor view\n", ev);
+			pnode->try_view_on_plane_failure_reasons |=
+				FAILURE_REASONS_FB_FORMAT_INCOMPATIBLE;
+			return NULL;
+		}
+
+		if (buffer->width > device->cursor_width ||
+		    buffer->height > device->cursor_height) {
+			drm_debug(b, "\t\t\t\t[view] not assigning view %p to plane "
+				     "(buffer (%dx%d) too large for cursor plane)\n",
+				     ev, buffer->width, buffer->height);
+			pnode->try_view_on_plane_failure_reasons |=
+				FAILURE_REASONS_FB_FORMAT_INCOMPATIBLE;
+			return NULL;
+		}
+
+		possible_plane_mask = (1 << output->cursor_plane->plane_idx);
+	} else {
+		if (mode == DRM_OUTPUT_PROPOSE_STATE_RENDERER_ONLY) {
+			drm_debug(b, "\t\t\t\t[view] not assigning view %p "
+				     "to plane: renderer-only mode\n", ev);
+			return NULL;
+		}
+
+		wl_list_for_each(plane, &device->plane_list, link) {
+			if (plane->type == WDRM_PLANE_TYPE_CURSOR)
+				continue;
+
+			if (drm_paint_node_transform_supported(pnode, plane))
+				possible_plane_mask |= 1 << plane->plane_idx;
+		}
+
+		if (!possible_plane_mask) {
+			pnode->try_view_on_plane_failure_reasons |=
+				FAILURE_REASONS_INCOMPATIBLE_TRANSFORM;
+			return NULL;
+		}
+
+		fb = drm_fb_get_from_paint_node(state, pnode);
+		if (!fb) {
+			drm_debug(b, "\t\t\t[view] couldn't get FB for view: 0x%lx\n",
+				  (unsigned long) pnode->try_view_on_plane_failure_reasons);
+			return NULL;
+		}
+
+		possible_plane_mask &= fb->plane_mask;
+	}
+
+	view_matches_entire_output =
+		weston_view_matches_output_entirely(ev, &output->base);
+	scanout_has_view_assigned =
+		drm_output_check_plane_has_view_assigned(output->scanout_plane,
+							 state);
 
 	/* assemble a list with possible candidates */
-	wl_list_for_each(plane, &b->plane_list, link) {
+	wl_list_for_each(plane, &device->plane_list, link) {
+		const char *p_name = drm_output_get_plane_type_name(plane);
+		uint64_t zpos;
+
+		if (possible_plane_mask == 0)
+			break;
+
+		if (!(possible_plane_mask & (1 << plane->plane_idx)))
+			continue;
+
+		possible_plane_mask &= ~(1 << plane->plane_idx);
+
+		switch (plane->type) {
+		case WDRM_PLANE_TYPE_CURSOR:
+			assert(buffer->shm_buffer);
+			assert(plane == output->cursor_plane);
+			break;
+		case WDRM_PLANE_TYPE_PRIMARY:
+			assert(fb);
+			if (plane != output->scanout_plane)
+				continue;
+			if (mode != DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY)
+				continue;
+			if (!view_matches_entire_output)
+				continue;
+			break;
+		case WDRM_PLANE_TYPE_OVERLAY:
+			assert(fb);
+			assert(mode != DRM_OUTPUT_PROPOSE_STATE_RENDERER_ONLY);
+			/* if the view covers the whole output, put it in the
+			 * scanout plane, not overlay */
+			if (view_matches_entire_output &&
+			    !scanout_has_view_assigned)
+				continue;
+			break;
+		default:
+			assert(false && "unknown plane type");
+		}
+
 		if (!drm_plane_is_available(plane, output))
 			continue;
 
 		if (drm_output_check_plane_has_view_assigned(plane, state)) {
-			drm_debug(b, "\t\t\t\t[plane] not adding plane %d to"
-				     " candidate list: view already assigned "
-				     "to a plane\n", plane->plane_id);
+			drm_debug(b, "\t\t\t\t[plane] not trying plane %d: "
+				     "another view already assigned\n",
+				     plane->plane_id);
+			continue;
+		}
+
+		/* if view has alpha check if this plane supports plane alpha */
+		if (ev->alpha != 1.0f && plane->alpha_max == plane->alpha_min) {
+			drm_debug(b, "\t\t\t\t[plane] not trying plane %d:"
+				     "plane-alpha not supported\n",
+				     plane->plane_id);
 			continue;
 		}
 
 		if (plane->zpos_min >= current_lowest_zpos) {
-			drm_debug(b, "\t\t\t\t[plane] not adding plane %d to "
-				     "candidate list: minimum zpos (%"PRIu64") "
-				     "plane's above current lowest zpos "
-				     "(%"PRIu64")\n", plane->plane_id,
-				     plane->zpos_min, current_lowest_zpos);
+			drm_debug(b, "\t\t\t\t[plane] not trying plane %d: "
+				     "plane's minimum zpos (%"PRIu64") above "
+				     "current lowest zpos (%"PRIu64")\n",
+				     plane->plane_id, plane->zpos_min,
+				     current_lowest_zpos);
 			continue;
 		}
 
-		if (mode == DRM_OUTPUT_PROPOSE_STATE_MIXED) {
-			assert(scanout_state != NULL);
-			if (scanout_state->zpos >= plane->zpos_max) {
-				drm_debug(b, "\t\t\t\t[plane] not adding plane %d to "
-					     "candidate list: primary's zpos "
-					     "value (%"PRIu64") higher than "
-					     "plane's maximum value (%"PRIu64")\n",
-					     plane->plane_id, scanout_state->zpos,
-					     plane->zpos_max);
-				continue;
-			}
+		/* If the surface buffer has an in-fence fd, but the plane doesn't
+		 * support fences, we can't place the buffer on this plane. */
+		if (ev->surface->acquire_fence_fd >= 0 &&
+		    plane->props[WDRM_PLANE_IN_FENCE_FD].prop_id == 0) {
+			drm_debug(b, "\t\t\t\t[%s] not placing view %p on %s: "
+			          "no in-fence support\n", p_name, ev, p_name);
+			return NULL;
 		}
-
-		if (mode == DRM_OUTPUT_PROPOSE_STATE_RENDERER_ONLY &&
-		    (plane->type == WDRM_PLANE_TYPE_OVERLAY ||
-		     plane->type == WDRM_PLANE_TYPE_PRIMARY)) {
-			drm_debug(b, "\t\t\t\t[plane] not adding plane %d to "
-				     "candidate list: renderer-only mode\n",
-				     plane->plane_id);
-			continue;
-		}
-
-		if (plane->type == WDRM_PLANE_TYPE_CURSOR &&
-		    (!shmbuf || wl_shm_buffer_get_format(shmbuf) != WL_SHM_FORMAT_ARGB8888)) {
-			drm_debug(b, "\t\t\t\t[plane] not adding plane %d, type cursor to "
-				     "candidate list: cursor planes only support ARGB8888"
-				     "wl_shm buffers and the view buffer is of another type\n",
-				     plane->plane_id);
-			continue;
-		}
-
-		if (plane->type != WDRM_PLANE_TYPE_CURSOR &&
-		    (!fb || !(fb->plane_mask & (1 << plane->plane_idx)))) {
-			*try_view_on_plane_failure_reasons |=
-				FAILURE_REASONS_FB_FORMAT_INCOMPATIBLE;
-			drm_debug(b, "\t\t\t\t[plane] not adding plane %d to "
-				     "candidate list: invalid pixel format\n",
-				     plane->plane_id);
-			continue;
-		}
-
-		drm_output_add_zpos_plane(plane, &zpos_candidate_list);
-	}
-
-	/* go over the potential candidate list and try to find a possible
-	 * plane suitable for \c ev; start with the highest zpos value of a
-	 * plane to maximize our chances, but do note we pass the zpos value
-	 * based on current tracked value by \c current_lowest_zpos_in_use */
-	while (!wl_list_empty(&zpos_candidate_list)) {
-		struct drm_plane_zpos *head_p_zpos =
-			wl_container_of(zpos_candidate_list.next,
-					head_p_zpos, link);
-		struct drm_plane *plane = head_p_zpos->plane;
-		const char *p_name = drm_output_get_plane_type_name(plane);
-		uint64_t zpos;
 
 		if (current_lowest_zpos == DRM_PLANE_ZPOS_INVALID_PLANE)
 			zpos = plane->zpos_max;
@@ -798,20 +618,41 @@ drm_output_prepare_plane_view(struct drm_output_state *state,
 			     "from candidate list, type: %s\n",
 			     plane->plane_id, p_name);
 
-		ps = drm_output_try_view_on_plane(plane, state, ev,
-						  mode, fb, zpos);
-		drm_output_destroy_zpos_plane(head_p_zpos);
+		if (plane->type == WDRM_PLANE_TYPE_CURSOR) {
+			ps = drm_output_prepare_cursor_paint_node(state, pnode, zpos);
+		} else {
+			ps = drm_output_try_paint_node_on_plane(plane, state,
+								pnode, mode,
+								fb, zpos);
+		}
+
 		if (ps) {
 			drm_debug(b, "\t\t\t\t[view] view %p has been placed to "
 				     "%s plane with computed zpos %"PRIu64"\n",
 				     ev, p_name, zpos);
+			/* Check if this ps is underlay plane, if so, the view
+			 * needs through hole on primary plane. */
+			if (mode == DRM_OUTPUT_PROPOSE_STATE_MIXED) {
+				assert(scanout_state != NULL);
+				if (scanout_state->zpos > ps->zpos) {
+					pnode->need_through_hole = true;
+				}
+			}
 			break;
 		}
+
+		pnode->try_view_on_plane_failure_reasons |=
+			FAILURE_REASONS_PLANES_REJECTED;
 	}
 
-	wl_list_for_each_safe(p_zpos, p_zpos_next, &zpos_candidate_list, link)
-		drm_output_destroy_zpos_plane(p_zpos);
+	if (!ps &&
+	    pnode->try_view_on_plane_failure_reasons == FAILURE_REASONS_NONE) {
+		pnode->try_view_on_plane_failure_reasons |=
+			FAILURE_REASONS_NO_PLANES_AVAILABLE;
+	}
 
+	/* if we have a plane state, it has its own ref to the fb; if not then
+	 * we drop ours here */
 	drm_fb_unref(fb);
 	return ps;
 }
@@ -822,22 +663,36 @@ drm_output_propose_state(struct weston_output *output_base,
 			 enum drm_output_propose_state_mode mode)
 {
 	struct drm_output *output = to_drm_output(output_base);
-	struct drm_backend *b = to_drm_backend(output->base.compositor);
+	struct drm_device *device = output->device;
+	struct drm_backend *b = device->backend;
 	struct weston_paint_node *pnode;
 	struct drm_output_state *state;
 	struct drm_plane_state *scanout_state = NULL;
 
-	pixman_region32_t renderer_region;
+	pixman_region32_t bottom_region;
 	pixman_region32_t occluded_region;
 
 	bool renderer_ok = (mode != DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY);
 	int ret;
-	uint64_t current_lowest_zpos = DRM_PLANE_ZPOS_INVALID_PLANE;
+	/* Record the current lowest zpos of the overlay planes */
+	uint64_t current_lowest_zpos_overlay = DRM_PLANE_ZPOS_INVALID_PLANE;
+	/* Record the current lowest zpos of the underlay plane */
+	uint64_t current_lowest_zpos_underlay = DRM_PLANE_ZPOS_INVALID_PLANE;
+	/* Record the current lowest zpos when finding planes for view */
+	uint64_t *current_lowest_zpos = NULL;
 
 	assert(!output->state_last);
 	state = drm_output_state_duplicate(output->state_cur,
 					   pending_state,
 					   DRM_OUTPUT_STATE_CLEAR_PLANES);
+
+	/* Start with the assumption that we're going to do a tearing commit,
+	 * if the hardware supports it and we're not compositing with the
+	 * renderer.
+	 * As soon as anything in the scene graph wants to be presented without
+	 * tearing, or a test fails, drop the tear flag. */
+	state->tear = device->tearing_supported &&
+		      mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY;
 
 	/* We implement mixed mode by progressively creating and testing
 	 * incremental states, of scanout + overlay + cursor. Since we
@@ -862,9 +717,14 @@ drm_output_propose_state(struct weston_output *output_base,
 			drm_output_state_free(state);
 			return NULL;
 		}
-
+#ifdef HAVE_GBM_MODIFIERS
+		int gbm_aligned = drm_fb_get_gbm_alignment (scanout_fb);
+		if (scanout_fb->width != ALIGNTO(output_base->current_mode->width, gbm_aligned) ||
+		    scanout_fb->height != ALIGNTO(output_base->current_mode->height, gbm_aligned)) {
+#else
 		if (scanout_fb->width != output_base->current_mode->width ||
 		    scanout_fb->height != output_base->current_mode->height) {
+#endif
 			drm_debug(b, "\t\t[state] cannot propose mixed mode "
 			             "for output %s (%lu): previous fb has "
 				     "different size\n",
@@ -878,6 +738,10 @@ drm_output_propose_state(struct weston_output *output_base,
 							  plane->state_cur);
 		/* assign the primary the lowest zpos value */
 		scanout_state->zpos = plane->zpos_min;
+		/* Set the current lowest zpos of the underlay plane to
+		 * scanout_state->zpos, the underlay planes need to look
+		 * down from the scanout plane */
+		current_lowest_zpos_underlay = scanout_state->zpos;
 		drm_debug(b, "\t\t[state] using renderer FB ID %lu for mixed "
 			     "mode for output %s (%lu)\n",
 			  (unsigned long) scanout_fb->fb_id, output->base.name,
@@ -886,8 +750,8 @@ drm_output_propose_state(struct weston_output *output_base,
 				scanout_state->zpos);
 	}
 
-	/* - renderer_region contains the total region which which will be
-	 *   covered by the renderer
+	/* - bottom_region contains the total region which which will be
+	 *   covered by the renderer and underlay region.
 	 * - occluded_region contains the total region which which will be
 	 *   covered by the renderer and hardware planes, where the view's
 	 *   visible-and-opaque region is added in both cases (the view's
@@ -895,7 +759,7 @@ drm_output_propose_state(struct weston_output *output_base,
 	 *   to skip the view, if it is completely occluded; includes the
 	 *   situation where occluded_region covers entire output's region.
 	 */
-	pixman_region32_init(&renderer_region);
+	pixman_region32_init(&bottom_region);
 	pixman_region32_init(&occluded_region);
 
 	wl_list_for_each(pnode, &output->base.paint_node_z_order_list,
@@ -911,6 +775,10 @@ drm_output_propose_state(struct weston_output *output_base,
 		             "output %s (%lu)\n",
 		          ev, output->base.name,
 			  (unsigned long) output->base.id);
+
+		current_lowest_zpos = &current_lowest_zpos_overlay;
+		current_lowest_zpos_underlay = MIN(current_lowest_zpos_underlay,
+		             current_lowest_zpos_overlay);
 
 		/* If this view doesn't touch our output at all, there's no
 		 * reason to do anything with it. */
@@ -957,9 +825,26 @@ drm_output_propose_state(struct weston_output *output_base,
 			force_renderer = true;
 		}
 
+		if (!b->gbm) {
+			drm_debug(b, "\t\t\t\t[view] not assigning view %p to plane "
+			             "(GBM not available)\n", ev);
+			force_renderer = true;
+		}
+
 		if (!weston_view_has_valid_buffer(ev)) {
 			drm_debug(b, "\t\t\t\t[view] not assigning view %p to plane "
 			             "(no buffer available)\n", ev);
+			force_renderer = true;
+		}
+
+		/* We can support this with the 'CRTC background colour' property,
+		 * if it is fullscreen (i.e. we disable the primary plane), and
+		 * opaque (as it is only shown in the absence of any covering
+		 * plane, not as a replacement for the primary plane per se). */
+		if (ev->surface->buffer_ref.buffer &&
+		    ev->surface->buffer_ref.buffer->type == WESTON_BUFFER_SOLID) {
+			drm_debug(b, "\t\t\t\t[view] not assigning view %p to plane "
+			             "(solid-colour surface)\n", ev);
 			force_renderer = true;
 		}
 
@@ -971,14 +856,15 @@ drm_output_propose_state(struct weston_output *output_base,
 		}
 
 		/* Since we process views from top to bottom, we know that if
-		 * the view intersects the calculated renderer region, it must
-		 * be part of, or occluded by, it, and cannot go on a plane. */
-		pixman_region32_intersect(&surface_overlap, &renderer_region,
+		 * the view intersects the calculated bottom region, it must
+		 * be part of, or occluded by, it, and cannot go on an overlay
+		 * plane. */
+		pixman_region32_intersect(&surface_overlap, &bottom_region,
 					  &clipped_view);
 		if (pixman_region32_not_empty(&surface_overlap)) {
-			drm_debug(b, "\t\t\t\t[view] not assigning view %p to plane "
+			drm_debug(b, "\t\t\t\t[view] assign view %p to underlay plane "
 			             "(occluded by renderer views)\n", ev);
-			force_renderer = true;
+			current_lowest_zpos = &current_lowest_zpos_underlay;
 		}
 		pixman_region32_fini(&surface_overlap);
 
@@ -992,19 +878,18 @@ drm_output_propose_state(struct weston_output *output_base,
 			force_renderer = true;
 		}
 
+		if (pnode->view->surface->tear_control)
+			state->tear &= pnode->view->surface->tear_control->may_tear;
+		else
+			state->tear = 0;
+
 		/* Now try to place it on a plane if we can. */
 		if (!force_renderer) {
 			drm_debug(b, "\t\t\t[plane] started with zpos %"PRIu64"\n",
-				      current_lowest_zpos);
-			ps = drm_output_prepare_plane_view(state, ev, mode,
-							   scanout_state,
-							   current_lowest_zpos,
-							   &pnode->try_view_on_plane_failure_reasons);
-			/* If we were able to place the view in a plane, set
-			 * failure reasons to none. */
-			if (ps)
-				pnode->try_view_on_plane_failure_reasons =
-					FAILURE_REASONS_NONE;
+				      *current_lowest_zpos);
+			ps = drm_output_find_plane_for_view(state, pnode, mode,
+							    scanout_state,
+							    *current_lowest_zpos);
 		} else {
 			/* We are forced to place the view in the renderer, set
 			 * the failure reason accordingly. */
@@ -1013,9 +898,9 @@ drm_output_propose_state(struct weston_output *output_base,
 		}
 
 		if (ps) {
-			current_lowest_zpos = ps->zpos;
+			*current_lowest_zpos = ps->zpos;
 			drm_debug(b, "\t\t\t[plane] next zpos to use %"PRIu64"\n",
-				      current_lowest_zpos);
+				      *current_lowest_zpos);
 		} else if (!ps && !renderer_ok) {
 			drm_debug(b, "\t\t[view] failing state generation: "
 				      "placing view %p to renderer not allowed\n",
@@ -1023,14 +908,17 @@ drm_output_propose_state(struct weston_output *output_base,
 			pixman_region32_fini(&clipped_view);
 			goto err_region;
 		} else if (!ps) {
-			/* clipped_view contains the area that's going to be
-			 * visible on screen; add this to the renderer region */
-			pixman_region32_union(&renderer_region,
-					      &renderer_region,
-					      &clipped_view);
-
 			drm_debug(b, "\t\t\t\t[view] view %p will be placed "
 				     "on the renderer\n", ev);
+		}
+
+		if (!ps || (mode == DRM_OUTPUT_PROPOSE_STATE_MIXED &&
+		    ps->zpos < scanout_state->zpos)) {
+			/* clipped_view contains the area that's going to be
+			 * visible on screen; add this to the renderer region */
+			pixman_region32_union(&bottom_region,
+					      &bottom_region,
+					      &clipped_view);
 		}
 
 		/* Opaque areas of our clipped view occlude areas behind it;
@@ -1049,7 +937,7 @@ drm_output_propose_state(struct weston_output *output_base,
 		pixman_region32_fini(&clipped_view);
 	}
 
-	pixman_region32_fini(&renderer_region);
+	pixman_region32_fini(&bottom_region);
 	pixman_region32_fini(&occluded_region);
 
 	/* In renderer-only mode, we can't test the state as we don't have a
@@ -1080,7 +968,7 @@ drm_output_propose_state(struct weston_output *output_base,
 	return state;
 
 err_region:
-	pixman_region32_fini(&renderer_region);
+	pixman_region32_fini(&bottom_region);
 	pixman_region32_fini(&occluded_region);
 err:
 	drm_output_state_free(state);
@@ -1088,21 +976,25 @@ err:
 }
 
 void
-drm_assign_planes(struct weston_output *output_base, void *repaint_data)
+drm_assign_planes(struct weston_output *output_base)
 {
-	struct drm_backend *b = to_drm_backend(output_base->compositor);
-	struct drm_pending_state *pending_state = repaint_data;
 	struct drm_output *output = to_drm_output(output_base);
+	struct drm_device *device = output->device;
+	struct drm_backend *b = device->backend;
+	struct drm_pending_state *pending_state = device->repaint_data;
 	struct drm_output_state *state = NULL;
 	struct drm_plane_state *plane_state;
+	struct drm_writeback_state *wb_state = output->wb_state;
 	struct weston_paint_node *pnode;
 	struct weston_plane *primary = &output_base->compositor->primary_plane;
 	enum drm_output_propose_state_mode mode = DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY;
 
+	assert(output);
+
 	drm_debug(b, "\t[repaint] preparing state for output %s (%lu)\n",
 		  output_base->name, (unsigned long) output_base->id);
 
-	if (!b->sprites_are_broken && !output->virtual) {
+	if (!device->sprites_are_broken && !output->virtual && b->gbm) {
 		drm_debug(b, "\t[repaint] trying planes-only build state\n");
 		state = drm_output_propose_state(output_base, pending_state, mode);
 		if (!state) {
@@ -1113,18 +1005,29 @@ drm_assign_planes(struct weston_output *output_base, void *repaint_data)
 							 pending_state,
 							 mode);
 		}
-		if (!state) {
-			drm_debug(b, "\t[repaint] could not build mixed-mode "
-				     "state, trying renderer-only\n");
-		}
 	} else {
 		drm_debug(b, "\t[state] no overlay plane support\n");
 	}
 
+	/* We can enter this block in two situations:
+	 * 1. If we didn't enter the last block (for some reason we can't use planes)
+	 * 2. If we entered but both the planes-only and the mixed modes didn't work */
 	if (!state) {
+		drm_debug(b, "\t[repaint] could not build state with planes, "
+			     "trying renderer-only\n");
 		mode = DRM_OUTPUT_PROPOSE_STATE_RENDERER_ONLY;
 		state = drm_output_propose_state(output_base, pending_state,
 						 mode);
+		/* If renderer only mode failed and we are in a writeback
+		 * screenshot, let's abort the writeback screenshot and try
+		 * again. */
+		if (!state && drm_output_get_writeback_state(output) != DRM_OUTPUT_WB_SCREENSHOT_OFF) {
+			drm_debug(b, "\t[repaint] could not build renderer-only "
+				     "state, trying without writeback setup\n");
+			drm_writeback_fail_screenshot(wb_state, "drm: failed to propose state");
+			state = drm_output_propose_state(output_base, pending_state,
+							 mode);
+		}
 	}
 
 	assert(state);
@@ -1144,26 +1047,24 @@ drm_assign_planes(struct weston_output *output_base, void *repaint_data)
 
 		/* Update dmabuf-feedback if needed */
 		if (ev->surface->dmabuf_feedback)
-			dmabuf_feedback_maybe_update(b, ev,
+			dmabuf_feedback_maybe_update(device, ev,
 						     pnode->try_view_on_plane_failure_reasons);
 		pnode->try_view_on_plane_failure_reasons = FAILURE_REASONS_NONE;
 
 		/* Test whether this buffer can ever go into a plane:
-		 * non-shm, or small enough to be a cursor.
-		 *
-		 * Also, keep a reference when using the pixman renderer.
-		 * That makes it possible to do a seamless switch to the GL
-		 * renderer and since the pixman renderer keeps a reference
-		 * to the buffer anyway, there is no side effects.
-		 */
-		if (b->use_pixman ||
-		    (weston_view_has_valid_buffer(ev) &&
-		    (!wl_shm_buffer_get(ev->surface->buffer_ref.buffer->resource) ||
-		     (ev->surface->width <= b->cursor_width &&
-		      ev->surface->height <= b->cursor_height))))
-			ev->surface->keep_buffer = true;
-		else
-			ev->surface->keep_buffer = false;
+		 * non-shm, or small enough to be a cursor.  */
+		ev->surface->keep_buffer = false;
+		if (weston_view_has_valid_buffer(ev)) {
+			struct weston_buffer *buffer =
+				ev->surface->buffer_ref.buffer;
+			if (buffer->type == WESTON_BUFFER_DMABUF ||
+			    buffer->type == WESTON_BUFFER_RENDERER_OPAQUE)
+				ev->surface->keep_buffer = true;
+			else if (buffer->type == WESTON_BUFFER_SHM &&
+				 (ev->surface->width <= device->cursor_width &&
+		       		  ev->surface->height <= device->cursor_height))
+				ev->surface->keep_buffer = true;
+		}
 
 		/* This is a bit unpleasant, but lacking a temporary place to
 		 * hang a plane off the view, we have to do a nested walk.
@@ -1187,6 +1088,7 @@ drm_assign_planes(struct weston_output *output_base, void *repaint_data)
 			drm_debug(b, "\t[repaint] view %p using renderer "
 				     "composition\n", ev);
 			weston_view_move_to_plane(ev, primary);
+			pnode->need_through_hole = false;
 		}
 
 		if (!target_plane ||
@@ -1204,8 +1106,9 @@ drm_assign_planes(struct weston_output *output_base, void *repaint_data)
 	/* We rely on output->cursor_view being both an accurate reflection of
 	 * the cursor plane's state, but also being maintained across repaints
 	 * to avoid unnecessary damage uploads, per the comment in
-	 * drm_output_prepare_cursor_view. In the event that we go from having
-	 * a cursor view to not having a cursor view, we need to clear it. */
+	 * drm_output_prepare_cursor_paint_node. In the event that we go from
+	 * having a cursor view to not having a cursor view, we need to clear
+	 * it. */
 	if (output->cursor_view) {
 		plane_state =
 			drm_output_state_get_existing_plane(state,
@@ -1213,6 +1116,9 @@ drm_assign_planes(struct weston_output *output_base, void *repaint_data)
 		if (!plane_state || !plane_state->fb)
 			drm_output_set_cursor_view(output, NULL);
 	}
+
+	if (drm_output_get_writeback_state(output) == DRM_OUTPUT_WB_SCREENSHOT_PREPARE_COMMIT)
+		drm_writeback_reference_planes(wb_state, &state->plane_list);
 }
 
 static void
@@ -1229,7 +1135,7 @@ drm_output_handle_cursor_view_destroy(struct wl_listener *listener, void *data)
  *
  * Ensure the stored value will be properly cleared if the view is destroyed.
  * The stored cursor view helps avoid unnecessary uploads of cursor data to
- * cursor plane buffer objects (see drm_output_prepare_cursor_view).
+ * cursor plane buffer objects (see drm_output_prepare_cursor_paint_node).
  */
 void
 drm_output_set_cursor_view(struct drm_output *output, struct weston_view *ev)

@@ -1,5 +1,6 @@
 sphinx = find_program('sphinx-build', required: true)
 doxygen = find_program('doxygen', required: true)
+dot = find_program('dot', required: true)
 breathe = find_program('breathe-apidoc', required: true)
 
 sphinx_c = run_command(sphinx, '--version')
@@ -38,6 +39,7 @@ sphinx_conf = configure_file(
 doxy_conf_data = configuration_data()
 doxy_conf_data.set('SRC_ROOT', meson.source_root())
 doxy_conf_data.set('OUTPUT_DIR', doxygen_database)
+doxy_conf_data.set('MESON_WERROR', get_option('werror') == true ? 'YES' : 'NO')
 doxygen_conf_weston = configure_file(
 		input: 'doxygen.ini.in',
 		output: 'doxygen.ini',

@@ -77,6 +77,7 @@ launcher_logind_take_device(struct launcher_logind *wl, uint32_t major,
 	bool b;
 	int r, fd;
 	dbus_bool_t paused;
+	int loop = 0;
 
 	m = dbus_message_new_method_call("org.freedesktop.login1",
 					 wl->spath,
@@ -94,10 +95,14 @@ launcher_logind_take_device(struct launcher_logind *wl, uint32_t major,
 		goto err_unref;
 	}
 
+retry:
 	reply = dbus_connection_send_with_reply_and_block(wl->dbus, m,
 							  -1, NULL);
 	if (!reply) {
+		sleep(1);
 		weston_log("logind: TakeDevice on %d:%d failed.\n", major, minor);
+		if(loop++ < 10)
+			goto retry;
 		r = -ENODEV;
 		goto err_unref;
 	}
@@ -496,13 +501,14 @@ device_paused(struct launcher_logind *wl, DBusMessage *m)
 	 * "gone" means the device is gone. We handle it the same as "force" as
 	 * a following udev event will be caught, too.
 	 *
-	 * If it's our main DRM device, tell the compositor to go asleep. */
-
+	 * If it's our main DRM device and not "gone", tell the compositor to go asleep. */
 	if (!strcmp(type, "pause"))
 		launcher_logind_pause_device_complete(wl, major, minor);
+	else if (strcmp(type, "gone") == 0)
+		return;
 
 	if (wl->sync_drm && wl->compositor->backend->device_changed)
-		wl->compositor->backend->device_changed(wl->compositor,
+		wl->compositor->backend->device_changed(wl->compositor->backend,
 							makedev(major,minor),
 							false);
 }
@@ -529,7 +535,7 @@ device_resumed(struct launcher_logind *wl, DBusMessage *m)
 	 * notify the compositor to wake up. */
 
 	if (wl->sync_drm && wl->compositor->backend->device_changed)
-		wl->compositor->backend->device_changed(wl->compositor,
+		wl->compositor->backend->device_changed(wl->compositor->backend,
 							makedev(major,minor),
 							true);
 }
@@ -696,29 +702,6 @@ launcher_logind_release_control(struct launcher_logind *wl)
 }
 
 static int
-weston_sd_session_get_vt(const char *sid, unsigned int *out)
-{
-#ifdef HAVE_SYSTEMD_LOGIN_209
-	return sd_session_get_vt(sid, out);
-#else
-	int r;
-	char *tty;
-
-	r = sd_session_get_tty(sid, &tty);
-	if (r < 0)
-		return r;
-
-	r = sscanf(tty, "tty%u", out);
-	free(tty);
-
-	if (r != 1)
-		return -EINVAL;
-
-	return 0;
-#endif
-}
-
-static int
 launcher_logind_activate(struct launcher_logind *wl)
 {
 	DBusMessage *m;
@@ -759,7 +742,7 @@ launcher_logind_get_session(char **session)
 
 static int
 launcher_logind_connect(struct weston_launcher **out, struct weston_compositor *compositor,
-			int tty, const char *seat_id, bool sync_drm)
+			const char *seat_id, bool sync_drm)
 {
 	struct launcher_logind *wl;
 	struct wl_event_loop *loop;
@@ -803,14 +786,9 @@ launcher_logind_connect(struct weston_launcher **out, struct weston_compositor *
 	r = sd_seat_can_tty(t);
 	free(t);
 	if (r > 0) {
-		r = weston_sd_session_get_vt(wl->sid, &wl->vtnr);
+		r = sd_session_get_vt(wl->sid, &wl->vtnr);
 		if (r < 0) {
 			weston_log("logind: session not running on a VT\n");
-			goto err_session;
-		} else if (tty > 0 && wl->vtnr != (unsigned int )tty) {
-			weston_log("logind: requested VT --tty=%d differs from real session VT %u\n",
-				   tty, wl->vtnr);
-			r = -EINVAL;
 			goto err_session;
 		}
 	} else if (r < 0) {
@@ -881,9 +859,6 @@ static int
 launcher_logind_get_vt(struct weston_launcher *launcher)
 {
 	struct launcher_logind *wl = wl_container_of(launcher, wl, base);
-	if (wl->vtnr <= 0) {
-		return -EINVAL;
-	}
 	return wl->vtnr;
 }
 

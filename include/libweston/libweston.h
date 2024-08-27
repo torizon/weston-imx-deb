@@ -44,6 +44,15 @@ extern "C" {
 #include <libweston/matrix.h>
 #include <libweston/zalloc.h>
 
+struct weston_log_pacer {
+	/** This must be set to zero before first use */
+	bool initialized;
+	struct timespec burst_start;
+	unsigned int event_count;
+	unsigned int max_burst;
+	unsigned int reset_ms;
+};
+
 struct weston_geometry {
 	int32_t x, y;
 	int32_t width, height;
@@ -81,6 +90,9 @@ struct weston_pointer_constraint;
 struct ro_anonymous_file;
 struct weston_color_profile;
 struct weston_color_transform;
+struct pixel_format_info;
+struct weston_output_capture_info;
+struct weston_tearing_control;
 
 enum weston_keyboard_modifier {
 	MODIFIER_CTRL = (1 << 0),
@@ -150,21 +162,6 @@ struct weston_spring {
 	uint32_t clip;
 };
 
-struct weston_output_zoom {
-	bool active;
-	float increment;
-	float level;
-	float max_level;
-	float trans_x, trans_y;
-	struct {
-		double x, y;
-	} current;
-	struct weston_seat *seat;
-	struct weston_animation animation_z;
-	struct weston_spring spring_z;
-	struct wl_listener motion_listener;
-};
-
 /* bit compatible with drm definitions. */
 enum dpms_enum {
 	WESTON_DPMS_ON,
@@ -222,6 +219,154 @@ struct weston_testsuite_data {
 	void *test_private_data;
 };
 
+/** EOTF mode for outputs and heads
+ *
+ * A list of EOTF modes for driving displays, defined by CTA-861-G for
+ * Dynamic Range and Mastering InfoFrame.
+ *
+ * On heads, a bitmask of one or more entries shows which modes are claimed
+ * supported.
+ *
+ * On outputs, the mode to be used for driving the video sink.
+ *
+ * For traditional non-HDR sRGB, use WESTON_EOTF_MODE_SDR.
+ */
+enum weston_eotf_mode {
+	/** Invalid EOTF mode, or none supported. */
+	WESTON_EOTF_MODE_NONE			= 0,
+
+	/** Traditional gamma, SDR luminance range */
+	WESTON_EOTF_MODE_SDR			= 0x01,
+
+	/** Traditional gamma, HDR luminance range */
+	WESTON_EOTF_MODE_TRADITIONAL_HDR	= 0x02,
+
+	/** Preceptual quantizer, SMPTE ST 2084 */
+	WESTON_EOTF_MODE_ST2084			= 0x04,
+
+	/** Hybrid log-gamma, ITU-R BT.2100 */
+	WESTON_EOTF_MODE_HLG			= 0x08,
+};
+
+/** Bitmask of all defined EOTF modes */
+#define WESTON_EOTF_MODE_ALL_MASK \
+	((uint32_t)(WESTON_EOTF_MODE_SDR | WESTON_EOTF_MODE_TRADITIONAL_HDR | \
+		    WESTON_EOTF_MODE_ST2084 | WESTON_EOTF_MODE_HLG))
+
+/** CIE 1931 xy chromaticity coordinates */
+struct weston_CIExy {
+	float x;
+	float y;
+};
+
+enum weston_hdr_metadata_type1_groups {
+	/** weston_hdr_metadata_type1::primary is set */
+	WESTON_HDR_METADATA_TYPE1_GROUP_PRIMARIES	= 0x01,
+
+	/** weston_hdr_metadata_type1::white is set */
+	WESTON_HDR_METADATA_TYPE1_GROUP_WHITE		= 0x02,
+
+	/** weston_hdr_metadata_type1::maxDML is set */
+	WESTON_HDR_METADATA_TYPE1_GROUP_MAXDML		= 0x04,
+
+	/** weston_hdr_metadata_type1::minDML is set */
+	WESTON_HDR_METADATA_TYPE1_GROUP_MINDML		= 0x08,
+
+	/** weston_hdr_metadata_type1::maxCLL is set */
+	WESTON_HDR_METADATA_TYPE1_GROUP_MAXCLL		= 0x10,
+
+	/** weston_hdr_metadata_type1::maxFALL is set */
+	WESTON_HDR_METADATA_TYPE1_GROUP_MAXFALL		= 0x20,
+
+	/** all valid bits */
+	WESTON_HDR_METADATA_TYPE1_GROUP_ALL_MASK	= 0x3f
+};
+
+/** HDR static metadata type 1
+ *
+ * The fields are defined by CTA-861-G except here they use float encoding.
+ *
+ * In Weston used only with HDR display modes.
+ */
+struct weston_hdr_metadata_type1 {
+	/** Which fields are valid
+	 *
+	 * A bitmask of values from enum weston_hdr_metadata_type1_groups.
+	 */
+	uint32_t group_mask;
+
+	/* EOTF is tracked externally with enum weston_eotf_mode */
+
+	/** Chromaticities of the primaries, in any order */
+	struct weston_CIExy primary[3];
+
+	/** White point chromaticity */
+	struct weston_CIExy white;
+
+	/** Maximum display mastering luminance, 1 - 65535 cd/m² */
+	float maxDML;
+
+	/** Minimum display mastering luminance, 0.0001 - 6.5535 cd/m² */
+	float minDML;
+
+	/** Maximum content light level, 1 - 65535 cd/m² */
+	float maxCLL;
+
+	/** Maximum frame-average light level, 1 - 65535 cd/m² */
+	float maxFALL;
+};
+
+enum weston_color_characteristics_groups {
+	/** weston_color_characteristics::primary is set */
+	WESTON_COLOR_CHARACTERISTICS_GROUP_PRIMARIES	= 0x01,
+
+	/** weston_color_characteristics::white is set */
+	WESTON_COLOR_CHARACTERISTICS_GROUP_WHITE	= 0x02,
+
+	/** weston_color_characteristics::max_luminance is set */
+	WESTON_COLOR_CHARACTERISTICS_GROUP_MAXL		= 0x04,
+
+	/** weston_color_characteristics::min_luminance is set */
+	WESTON_COLOR_CHARACTERISTICS_GROUP_MINL		= 0x08,
+
+	/** weston_color_characteristics::maxFALL is set */
+	WESTON_COLOR_CHARACTERISTICS_GROUP_MAXFALL	= 0x10,
+
+	/** all valid bits */
+	WESTON_COLOR_CHARACTERISTICS_GROUP_ALL_MASK	= 0x1f
+};
+
+/** Basic display color characteristics
+ *
+ * This is a simple description of a display or output (monitor) color
+ * characteristics. The parameters can be found in EDID, with caveats. They
+ * are particularly useful with HDR monitors.
+ */
+struct weston_color_characteristics {
+	/** Which fields are valid
+	 *
+	 * A bitmask of values from enum weston_color_characteristics_groups.
+	 */
+	uint32_t group_mask;
+
+	/* EOTF is tracked externally with enum weston_eotf_mode */
+
+	/** Chromaticities of the primaries */
+	struct weston_CIExy primary[3];
+
+	/** White point chromaticity */
+	struct weston_CIExy white;
+
+	/** Display's desired maximum content peak luminance, cd/m² */
+	float max_luminance;
+
+	/** Display's desired minimum content luminance, cd/m² */
+	float min_luminance;
+
+	/** Display's desired maximum frame-average light level, cd/m² */
+	float maxFALL;
+};
+
 /** Represents a head, usually a display connector
  *
  * \rst
@@ -231,6 +376,7 @@ struct weston_testsuite_data {
  */
 struct weston_head {
 	struct weston_compositor *compositor;	/**< owning compositor */
+	struct weston_backend *backend;	/**< owning backend */
 	struct wl_list compositor_link;	/**< in weston_compositor::head_list */
 	struct wl_signal destroy_signal;	/**< destroy callbacks */
 
@@ -258,9 +404,40 @@ struct weston_head {
 	char *name;			/**< head name, e.g. connector name */
 	bool connected;			/**< is physically connected */
 	bool non_desktop;		/**< non-desktop display, e.g. HMD */
+	uint32_t supported_eotf_mask;	/**< supported weston_eotf_mode bits */
 
 	/** Current content protection status */
 	enum weston_hdcp_protection current_protection;
+};
+
+/** Output properties derived from its color characteristics and profile
+ *
+ * These are constructed by a color manager.
+ *
+ * A weston_output_color_outcome owns (a reference to) everything it contains.
+ *
+ * \ingroup output
+ * \internal
+ */
+struct weston_output_color_outcome {
+	/** sRGB to output color space transformation */
+	struct weston_color_transform *from_sRGB_to_output;
+
+	/** sRGB to blending color space transformation */
+	struct weston_color_transform *from_sRGB_to_blend;
+
+	/** Blending to output color space transformation */
+	struct weston_color_transform *from_blend_to_output;
+
+	/** HDR Static Metadata Type 1 for WESTON_EOTF_MODE_ST2084 */
+	struct weston_hdr_metadata_type1 hdr_meta;
+};
+
+enum weston_output_power_state {
+	/** No rendering and dpms off */
+	WESTON_OUTPUT_POWER_FORCED_OFF = 0,
+	/** Normal rendering and dpms on */
+	WESTON_OUTPUT_POWER_NORMAL
 };
 
 /** Content producer for heads
@@ -324,8 +501,6 @@ struct weston_output {
 	/** For cancelling the idle_repaint callback on output destruction. */
 	struct wl_event_source *idle_repaint_source;
 
-	struct weston_output_zoom zoom;
-	int dirty;
 	struct wl_signal frame_signal;
 	struct wl_signal destroy_signal;	/**< sent when disabled */
 	int move_x, move_y;
@@ -334,6 +509,7 @@ struct weston_output {
 	int disable_planes;
 	int destroying;
 	struct wl_list feedback_list;
+	struct weston_output_capture_info *capture_info;
 
 	uint32_t transform;
 	int32_t native_scale;
@@ -351,12 +527,15 @@ struct weston_output {
 	enum weston_hdcp_protection current_protection;
 	bool allow_protection;
 
+	enum weston_output_power_state power_state;
+
+	struct weston_log_pacer repaint_delay_pacer;
+	struct weston_log_pacer pixman_overdraw_pacer;
+
 	int (*start_repaint_loop)(struct weston_output *output);
-	int (*repaint)(struct weston_output *output,
-			pixman_region32_t *damage,
-			void *repaint_data);
+	int (*repaint)(struct weston_output *output, pixman_region32_t *damage);
 	void (*destroy)(struct weston_output *output);
-	void (*assign_planes)(struct weston_output *output, void *repaint_data);
+	void (*assign_planes)(struct weston_output *output);
 	int (*switch_mode)(struct weston_output *output, struct weston_mode *mode);
 
 	/* backlight values are on 0-255 range, where higher is brighter */
@@ -375,10 +554,12 @@ struct weston_output {
 	int scale;
 
 	struct weston_color_profile *color_profile;
-	struct weston_color_transform *from_sRGB_to_output;
-	struct weston_color_transform *from_sRGB_to_blend;
-	struct weston_color_transform *from_blend_to_output;
 	bool from_blend_to_output_by_backend;
+	enum weston_eotf_mode eotf_mode;
+	struct weston_color_characteristics color_characteristics;
+
+	struct weston_output_color_outcome *color_outcome;
+	uint64_t color_outcome_serial;
 
 	int (*enable)(struct weston_output *output);
 	int (*disable)(struct weston_output *output);
@@ -420,12 +601,9 @@ enum weston_pointer_motion_mask {
 struct weston_pointer_motion_event {
 	uint32_t mask;
 	struct timespec time;
-	double x;
-	double y;
-	double dx;
-	double dy;
-	double dx_unaccel;
-	double dy_unaccel;
+	struct weston_coord_global abs;
+	struct weston_coord rel;
+	struct weston_coord rel_unaccel;
 };
 
 struct weston_pointer_axis_event {
@@ -496,6 +674,46 @@ struct weston_touch_grab {
 	struct weston_touch *touch;
 };
 
+struct weston_tablet;
+struct weston_tablet_tool;
+struct weston_tablet_tool_grab;
+struct weston_tablet_tool_grab_interface {
+	void (*proximity_in)(struct weston_tablet_tool_grab *grab,
+			     const struct timespec *time,
+			     struct weston_tablet *tablet);
+	void (*proximity_out)(struct weston_tablet_tool_grab *grab,
+			     const struct timespec *time);
+	void (*motion)(struct weston_tablet_tool_grab *grab,
+		       const struct timespec *time,
+		       struct weston_coord_global pos);
+	void (*down)(struct weston_tablet_tool_grab *grab,
+		     const struct timespec *time);
+	void (*up)(struct weston_tablet_tool_grab *grab,
+		   const struct timespec *time);
+	void (*pressure)(struct weston_tablet_tool_grab *grab,
+			 const struct timespec *time,
+			 uint32_t pressure);
+	void (*distance)(struct weston_tablet_tool_grab *grab,
+			 const struct timespec *time,
+			 uint32_t distance);
+	void (*tilt)(struct weston_tablet_tool_grab *grab,
+		     const struct timespec *time,
+		     wl_fixed_t tilt_x,
+		     wl_fixed_t tilt_y);
+	void (*button)(struct weston_tablet_tool_grab *grab,
+		       const struct timespec *time,
+		       uint32_t button,
+		       uint32_t state);
+	void (*frame)(struct weston_tablet_tool_grab *grab,
+		      const struct timespec *time);
+	void (*cancel)(struct weston_tablet_tool_grab *grab);
+};
+
+struct weston_tablet_tool_grab {
+	const struct weston_tablet_tool_grab_interface *interface;
+	struct weston_tablet_tool *tool;
+};
+
 struct weston_data_offer {
 	struct wl_resource *resource;
 	struct weston_data_source *source;
@@ -548,16 +766,16 @@ struct weston_pointer {
 
 	struct weston_view *sprite;
 	struct wl_listener sprite_destroy_listener;
-	int32_t hotspot_x, hotspot_y;
+	struct weston_coord_surface hotspot;
 
 	struct weston_pointer_grab *grab;
 	struct weston_pointer_grab default_grab;
-	wl_fixed_t grab_x, grab_y;
+	struct weston_coord_global grab_pos;
 	uint32_t grab_button;
 	uint32_t grab_serial;
 	struct timespec grab_time;
 
-	wl_fixed_t x, y;
+	struct weston_coord_global pos;
 	wl_fixed_t sx, sy;
 	uint32_t button_count;
 
@@ -650,6 +868,7 @@ struct weston_touch {
 	struct wl_listener focus_resource_listener;
 	uint32_t focus_serial;
 	struct wl_signal focus_signal;
+	bool pending_focus_reset;
 
 	uint32_t num_tp;
 
@@ -663,10 +882,61 @@ struct weston_touch {
 	struct wl_list timestamps_list;
 };
 
-void
+struct weston_tablet_tool {
+	struct weston_seat *seat;
+	uint32_t type;
+	struct weston_tablet *current_tablet;
+
+	struct wl_list resource_list;
+	struct wl_list focus_resource_list;
+	struct weston_view *focus;
+	struct wl_listener focus_view_listener;
+	struct wl_listener focus_resource_listener;
+	uint32_t focus_serial;
+	uint32_t grab_serial;
+
+	struct wl_list link;
+
+	uint64_t serial;
+	uint64_t hwid;
+	uint32_t capabilities;
+
+	struct weston_tablet_tool_grab *grab;
+	struct weston_tablet_tool_grab default_grab;
+
+	int button_count;
+	bool tip_is_down;
+
+	struct timespec frame_time;
+
+	struct weston_view *sprite;
+	struct weston_coord_surface hotspot;
+	struct wl_listener sprite_destroy_listener;
+
+	struct weston_coord_global pos;
+	struct weston_coord_global grab_pos;
+
+	struct wl_signal focus_signal;
+	struct wl_signal removed_signal;
+};
+
+struct weston_tablet {
+	struct weston_seat *seat;
+
+	struct wl_list resource_list;
+	struct wl_list tool_list;
+
+	struct wl_list link;
+
+	char *name;
+	uint32_t vid;
+	uint32_t pid;
+	const char *path;
+};
+
+struct weston_coord_global
 weston_pointer_motion_to_abs(struct weston_pointer *pointer,
-			     struct weston_pointer_motion_event *event,
-			     wl_fixed_t *x, wl_fixed_t *y);
+			     struct weston_pointer_motion_event *event);
 
 void
 weston_pointer_send_motion(struct weston_pointer *pointer,
@@ -677,21 +947,22 @@ weston_pointer_has_focus_resource(struct weston_pointer *pointer);
 void
 weston_pointer_send_button(struct weston_pointer *pointer,
 			   const struct timespec *time,
-			   uint32_t button, uint32_t state_w);
+			   uint32_t button,
+			   enum wl_pointer_button_state state);
 void
 weston_pointer_send_axis(struct weston_pointer *pointer,
 			 const struct timespec *time,
 			 struct weston_pointer_axis_event *event);
 void
 weston_pointer_send_axis_source(struct weston_pointer *pointer,
-				uint32_t source);
+				enum wl_pointer_axis_source source);
 void
 weston_pointer_send_frame(struct weston_pointer *pointer);
 
 void
 weston_pointer_set_focus(struct weston_pointer *pointer,
-			 struct weston_view *view,
-			 wl_fixed_t sx, wl_fixed_t sy);
+			 struct weston_view *view);
+
 void
 weston_pointer_clear_focus(struct weston_pointer *pointer);
 void
@@ -739,16 +1010,74 @@ weston_touch_end_grab(struct weston_touch *touch);
 
 void
 weston_touch_send_down(struct weston_touch *touch, const struct timespec *time,
-		       int touch_id, wl_fixed_t x, wl_fixed_t y);
+		       int touch_id, struct weston_coord_global pos);
 void
 weston_touch_send_up(struct weston_touch *touch, const struct timespec *time,
 		     int touch_id);
 void
 weston_touch_send_motion(struct weston_touch *touch,
 			 const struct timespec *time, int touch_id,
-			 wl_fixed_t x, wl_fixed_t y);
+			 struct weston_coord_global pos);
 void
 weston_touch_send_frame(struct weston_touch *touch);
+
+
+void
+weston_tablet_tool_set_focus(struct weston_tablet_tool *tool,
+			     struct weston_view *view,
+			     const struct timespec *time);
+
+void
+weston_tablet_tool_start_grab(struct weston_tablet_tool *tool,
+			      struct weston_tablet_tool_grab *grab);
+
+void
+weston_tablet_tool_end_grab(struct weston_tablet_tool *tool);
+
+void
+weston_tablet_tool_send_proximity_out(struct weston_tablet_tool *tool,
+				      const struct timespec *time);
+
+void
+weston_tablet_tool_send_motion(struct weston_tablet_tool *tool,
+			       const struct timespec *time,
+			       struct weston_coord_global pos);
+
+void
+weston_tablet_tool_send_down(struct weston_tablet_tool *tool,
+			     const struct timespec *time);
+
+void
+weston_tablet_tool_send_up(struct weston_tablet_tool *tool,
+			    const struct timespec *time);
+
+void
+weston_tablet_tool_send_pressure(struct weston_tablet_tool *tool,
+				  const struct timespec *time,
+				  uint32_t pressure);
+
+void
+weston_tablet_tool_send_distance(struct weston_tablet_tool *tool,
+				  const struct timespec *time,
+				  uint32_t distance);
+
+void
+weston_tablet_tool_send_tilt(struct weston_tablet_tool *tool,
+			      const struct timespec *time,
+			      wl_fixed_t tilt_x, wl_fixed_t tilt_y);
+
+void
+weston_tablet_tool_send_button(struct weston_tablet_tool *tool,
+				const struct timespec *time,
+				uint32_t button, uint32_t state);
+
+void
+weston_tablet_tool_send_frame(struct weston_tablet_tool *tool,
+			       const struct timespec *time);
+
+void
+weston_tablet_tool_cursor_move(struct weston_tablet_tool *tool,
+			       struct weston_coord_global pos);
 
 
 void
@@ -848,6 +1177,11 @@ struct weston_seat {
 
 	struct input_method *input_method;
 	char *seat_name;
+
+	struct wl_list tablet_list;
+	struct wl_list tablet_tool_list;
+	struct wl_list tablet_seat_resource_list;
+	struct wl_signal tablet_tool_added_signal;
 };
 
 enum {
@@ -937,39 +1271,6 @@ struct weston_plane {
 
 struct weston_drm_format_array;
 
-struct weston_renderer {
-	int (*read_pixels)(struct weston_output *output,
-			       pixman_format_code_t format, void *pixels,
-			       uint32_t x, uint32_t y,
-			       uint32_t width, uint32_t height);
-	void (*repaint_output)(struct weston_output *output,
-			       pixman_region32_t *output_damage);
-	void (*flush_damage)(struct weston_surface *surface);
-	void (*attach)(struct weston_surface *es, struct weston_buffer *buffer);
-	void (*surface_set_color)(struct weston_surface *surface,
-			       float red, float green,
-			       float blue, float alpha);
-	void (*destroy)(struct weston_compositor *ec);
-
-
-	/** See weston_surface_get_content_size() */
-	void (*surface_get_content_size)(struct weston_surface *surface,
-					 int *width, int *height);
-
-	/** See weston_surface_copy_content() */
-	int (*surface_copy_content)(struct weston_surface *surface,
-				    void *target, size_t size,
-				    int src_x, int src_y,
-				    int width, int height);
-
-	/** See weston_compositor_import_dmabuf() */
-	bool (*import_dmabuf)(struct weston_compositor *ec,
-			      struct linux_dmabuf_buffer *buffer);
-
-	const struct weston_drm_format_array *
-			(*get_supported_formats)(struct weston_compositor *ec);
-};
-
 enum weston_capability {
 	/* backend/renderer supports arbitrary rotation */
 	WESTON_CAP_ROTATION_ANY			= 0x0001,
@@ -1056,6 +1357,7 @@ struct weston_debug_compositor;
 struct weston_color_manager;
 struct weston_dmabuf_feedback;
 struct weston_dmabuf_feedback_format_table;
+struct weston_renderer;
 
 /** Main object, container-like structure which aggregates all other objects.
  *
@@ -1109,6 +1411,7 @@ struct weston_compositor {
 	struct wl_list modifier_binding_list;
 	struct wl_list button_binding_list;
 	struct wl_list touch_binding_list;
+	struct wl_list tablet_tool_binding_list;
 	struct wl_list axis_binding_list;
 	struct wl_list debug_binding_list;
 
@@ -1126,7 +1429,7 @@ struct weston_compositor {
 
 	struct weston_color_manager *color_manager;
 	struct weston_renderer *renderer;
-	pixman_format_code_t read_format;
+	const struct pixel_format_info *read_format;
 
 	struct weston_backend *backend;
 	struct weston_launcher *launcher;
@@ -1137,6 +1440,7 @@ struct weston_compositor {
 	struct wl_list plugin_api_list; /* struct weston_plugin_api::link */
 
 	uint32_t output_id_pool;
+	bool output_flow_dirty;
 
 	struct xkb_rule_names xkb_names;
 	struct xkb_context *xkb_context;
@@ -1160,6 +1464,9 @@ struct weston_compositor {
 	void *user_data;
 	void (*exit)(struct weston_compositor *c);
 
+	struct wl_global *tablet_manager;
+	struct wl_list tablet_manager_resource_list;
+
 	/* Whether to let the compositor run without any input device. */
 	bool require_input;
 
@@ -1182,8 +1489,22 @@ struct weston_compositor {
 	struct weston_log_context *weston_log_ctx;
 	struct weston_log_scope *debug_scene;
 	struct weston_log_scope *timeline;
+	struct weston_log_scope *libseat_debug;
 
 	struct content_protection *content_protection;
+
+	struct weston_log_pacer unmapped_surface_or_view_pacer;
+	struct weston_log_pacer presentation_clock_failure_pacer;
+
+	/** Screenshooting global state, see output-capture.c */
+	struct {
+		struct wl_global *weston_capture_v1;
+		struct wl_signal ask_auth;
+	} output_capture;
+};
+
+struct weston_solid_buffer_values {
+	float r, g, b, a;
 };
 
 struct weston_buffer {
@@ -1191,19 +1512,45 @@ struct weston_buffer {
 	struct wl_signal destroy_signal;
 	struct wl_listener destroy_listener;
 
+	enum {
+		WESTON_BUFFER_SHM,
+		WESTON_BUFFER_DMABUF,
+		WESTON_BUFFER_RENDERER_OPAQUE,
+		WESTON_BUFFER_SOLID,
+	} type;
+
 	union {
 		struct wl_shm_buffer *shm_buffer;
+		void *dmabuf;
 		void *legacy_buffer;
+		struct weston_solid_buffer_values solid;
 	};
+
 	int32_t width, height;
 	uint32_t busy_count;
-	int y_inverted;
+	uint32_t passive_count;
+	enum {
+		ORIGIN_TOP_LEFT, /* buffer content starts at (0,0) */
+		ORIGIN_BOTTOM_LEFT, /* buffer content starts at (0, height) */
+	} buffer_origin;
+	bool direct_display;
+
+	void *renderer_private;
 	void *backend_private;
+
+	const struct pixel_format_info *pixel_format;
+	uint64_t format_modifier;
+};
+
+enum weston_buffer_reference_type {
+	BUFFER_REF_NONE,
+	BUFFER_MAY_BE_ACCESSED,
+	BUFFER_WILL_NOT_BE_ACCESSED,
 };
 
 struct weston_buffer_reference {
 	struct weston_buffer *buffer;
-	struct wl_listener destroy_listener;
+	enum weston_buffer_reference_type type;
 };
 
 struct weston_buffer_viewport {
@@ -1289,6 +1636,7 @@ struct weston_view {
 	struct weston_surface *surface;
 	struct wl_list surface_link;
 	struct wl_signal destroy_signal;
+	struct wl_signal unmap_signal;
 
 	/* struct weston_paint_node::view_link */
 	struct wl_list paint_node_list;
@@ -1310,7 +1658,11 @@ struct weston_view {
 	 * That includes the transformations referenced from the list.
 	 */
 	struct {
-		float x, y; /* surface translation on display */
+		/* pos_offset is the surface's position in the global space
+		 * if parent is NULL, or its offset in its parent's surface
+		 * space if parent is set.
+		 */
+		struct weston_coord pos_offset;
 
 		/* struct weston_transform */
 		struct wl_list transformation_list;
@@ -1341,8 +1693,10 @@ struct weston_view {
 		pixman_region32_t boundingbox;
 		pixman_region32_t opaque;
 
-		/* matrix and inverse are used only if enabled = 1.
-		 * If enabled = 0, use x, y, width, height directly.
+		/* Regardless of enabled status, matrix and inverse are
+		 * updated by weston_view_update_transform(), and are
+		 * used for coordinate conversion between the view
+		 * and global spaces.
 		 */
 		int enabled;
 		struct weston_matrix matrix;
@@ -1369,6 +1723,7 @@ struct weston_view {
 	uint32_t psf_flags;
 
 	bool is_mapped;
+	struct weston_log_pacer subsurface_parent_log_pacer;
 };
 
 struct weston_surface_state {
@@ -1376,6 +1731,7 @@ struct weston_surface_state {
 	int newly_attached;
 	struct weston_buffer *buffer;
 	struct wl_listener buffer_destroy_listener;
+
 	int32_t sx;
 	int32_t sy;
 
@@ -1441,7 +1797,7 @@ struct weston_pointer_constraint {
 	bool hint_is_pending;
 
 	struct wl_listener pointer_destroy_listener;
-	struct wl_listener surface_destroy_listener;
+	struct wl_listener view_unmap_listener;
 	struct wl_listener surface_commit_listener;
 	struct wl_listener surface_activate_listener;
 };
@@ -1510,10 +1866,11 @@ struct weston_surface {
 	/*
 	 * If non-NULL, this function will be called on
 	 * wl_surface::commit after a new buffer has been set up for
-	 * this surface. The integer params are the sx and sy
-	 * parameters supplied to wl_surface::attach.
+	 * this surface. The coordinate holds the buffer offset parameters
+	 * supplied to wl_surface::attach or wl_surface::offset.
 	 */
-	void (*committed)(struct weston_surface *es, int32_t sx, int32_t sy);
+	void (*committed)(struct weston_surface *es,
+			  struct weston_coord_surface new_origin);
 	void *committed_private;
 	int (*get_label)(struct weston_surface *surface, char *buf, size_t len);
 
@@ -1533,7 +1890,7 @@ struct weston_surface {
 	 */
 	const char *role_name;
 
-	bool is_mapped;
+	bool is_mapped, is_unmapping;
 	bool is_opaque;
 
 	/* An list of per seat pointer constraints. */
@@ -1549,6 +1906,8 @@ struct weston_surface {
 	enum weston_hdcp_protection desired_protection;
 	enum weston_hdcp_protection current_protection;
 	enum weston_surface_protection_mode protection_mode;
+
+	struct weston_tearing_control *tear_control;
 };
 
 struct weston_subsurface {
@@ -1565,9 +1924,8 @@ struct weston_subsurface {
 	struct wl_list parent_link_pending;
 
 	struct {
-		int32_t x;
-		int32_t y;
-		int set;
+		struct weston_coord_surface offset;
+		bool changed;
 	} position;
 
 	int has_cached_data;
@@ -1623,17 +1981,17 @@ weston_view_update_transform(struct weston_view *view);
 void
 weston_view_geometry_dirty(struct weston_view *view);
 
-void
-weston_view_to_global_float(struct weston_view *view,
-			    float sx, float sy, float *x, float *y);
+struct weston_coord_global __attribute__ ((warn_unused_result))
+weston_coord_surface_to_global(const struct weston_view *view,
+			       struct weston_coord_surface coord);
 
-void
-weston_view_from_global(struct weston_view *view,
-			int32_t x, int32_t y, int32_t *vx, int32_t *vy);
-void
-weston_view_from_global_fixed(struct weston_view *view,
-			      wl_fixed_t x, wl_fixed_t y,
-			      wl_fixed_t *vx, wl_fixed_t *vy);
+struct weston_coord_surface __attribute__ ((warn_unused_result))
+weston_coord_global_to_surface(const struct weston_view *view,
+			       struct weston_coord_global coord);
+
+struct weston_coord_buffer __attribute__ ((warn_unused_result))
+weston_coord_surface_to_buffer(const struct weston_surface *surface,
+			       struct weston_coord_surface coord);
 
 void
 weston_view_activate_input(struct weston_view *view,
@@ -1670,6 +2028,8 @@ weston_layer_mask_is_infinite(struct weston_layer *layer);
 
 /* An invalid flag in presented_flags to catch logic errors. */
 #define WP_PRESENTATION_FEEDBACK_INVALID (1U << 31)
+/* Steal another bit from presented_flags for tearing */
+#define WESTON_FINISH_FRAME_TEARING (1U << 30)
 
 void
 weston_output_schedule_repaint(struct weston_output *output);
@@ -1683,9 +2043,7 @@ void
 weston_compositor_sleep(struct weston_compositor *compositor);
 struct weston_view *
 weston_compositor_pick_view(struct weston_compositor *compositor,
-			    wl_fixed_t x, wl_fixed_t y,
-			    wl_fixed_t *sx, wl_fixed_t *sy);
-
+			    struct weston_coord_global pos);
 
 struct weston_binding;
 typedef void (*weston_key_binding_handler_t)(struct weston_keyboard *keyboard,
@@ -1733,6 +2091,16 @@ weston_compositor_add_touch_binding(struct weston_compositor *compositor,
 				    weston_touch_binding_handler_t binding,
 				    void *data);
 
+typedef void (*weston_tablet_tool_binding_handler_t)(struct weston_tablet_tool *tool,
+						     uint32_t button,
+						     void *data);
+struct weston_binding *
+weston_compositor_add_tablet_tool_binding(struct weston_compositor *compositor,
+					  uint32_t button,
+					  enum weston_keyboard_modifier modifier,
+					  weston_tablet_tool_binding_handler_t binding,
+					  void *data);
+
 typedef void (*weston_axis_binding_handler_t)(struct weston_pointer *pointer,
 					      const struct timespec *time,
 					      struct weston_pointer_axis_event *event,
@@ -1761,8 +2129,27 @@ weston_surface_create(struct weston_compositor *compositor);
 struct weston_view *
 weston_view_create(struct weston_surface *surface);
 
+struct weston_buffer_reference *
+weston_buffer_create_solid_rgba(struct weston_compositor *compositor,
+				float r, float g, float b, float a);
+
+void
+weston_surface_attach_solid(struct weston_surface *surface,
+			    struct weston_buffer_reference *buffer_ref,
+			    int w, int h);
+
+void
+weston_buffer_destroy_solid(struct weston_buffer_reference *buffer_ref);
+
+bool
+weston_surface_has_content(struct weston_surface *surface);
+
 void
 weston_view_destroy(struct weston_view *view);
+
+void
+weston_view_set_rel_position(struct weston_view *view,
+			     float x, float y);
 
 void
 weston_view_set_position(struct weston_view *view,
@@ -1788,6 +2175,9 @@ weston_view_schedule_repaint(struct weston_view *view);
 bool
 weston_surface_is_mapped(struct weston_surface *surface);
 
+bool
+weston_surface_is_unmapping(struct weston_surface *surface);
+
 void
 weston_surface_set_size(struct weston_surface *surface,
 			int32_t width, int32_t height);
@@ -1800,6 +2190,9 @@ weston_view_damage_below(struct weston_view *view);
 
 void
 weston_view_unmap(struct weston_view *view);
+
+void
+weston_surface_map(struct weston_surface *surface);
 
 void
 weston_surface_unmap(struct weston_surface *surface);
@@ -1834,7 +2227,8 @@ weston_surface_copy_content(struct weston_surface *surface,
 			    int width, int height);
 
 struct weston_buffer *
-weston_buffer_from_resource(struct wl_resource *resource);
+weston_buffer_from_resource(struct weston_compositor *ec,
+			    struct wl_resource *resource);
 
 void
 weston_compositor_get_time(struct timespec *time);
@@ -1857,11 +2251,22 @@ weston_compositor_add_destroy_listener_once(struct weston_compositor *compositor
 
 enum weston_compositor_backend {
 	WESTON_BACKEND_DRM,
-	WESTON_BACKEND_FBDEV,
 	WESTON_BACKEND_HEADLESS,
+	WESTON_BACKEND_PIPEWIRE,
 	WESTON_BACKEND_RDP,
+	WESTON_BACKEND_VNC,
 	WESTON_BACKEND_WAYLAND,
 	WESTON_BACKEND_X11,
+};
+
+enum weston_renderer_type {
+	WESTON_RENDERER_AUTO = 0,
+	WESTON_RENDERER_NOOP = 1,
+	WESTON_RENDERER_PIXMAN = 2,
+	WESTON_RENDERER_GL = 3,
+#if defined(ENABLE_IMXG2D)
+	WESTON_RENDERER_G2D = 4,
+#endif
 };
 
 int
@@ -1875,11 +2280,6 @@ weston_compositor_get_user_data(struct weston_compositor *compositor);
 void
 weston_compositor_exit_with_code(struct weston_compositor *compositor,
 				 int exit_code);
-void
-weston_output_update_zoom(struct weston_output *output);
-void
-weston_output_activate_zoom(struct weston_output *output,
-			    struct weston_seat *seat);
 void
 weston_output_add_destroy_listener(struct weston_output *output,
 				   struct wl_listener *listener);
@@ -1905,6 +2305,11 @@ weston_log(const char *fmt, ...)
 int
 weston_log_continue(const char *fmt, ...)
 	__attribute__ ((format (printf, 1, 2)));
+
+void
+weston_log_paced(struct weston_log_pacer *pacer, unsigned int max_burst,
+		 unsigned int reset_ms, const char *fmt, ...)
+	__attribute__ ((format (printf, 4, 5)));
 
 enum weston_screenshooter_outcome {
 	WESTON_SCREENSHOOTER_SUCCESS,
@@ -1959,12 +2364,11 @@ struct weston_view_animation *
 weston_slide_run(struct weston_view *view, float start, float stop,
 		 weston_view_animation_done_func_t done, void *data);
 
-void
-weston_surface_set_color(struct weston_surface *surface,
-			 float red, float green, float blue, float alpha);
+struct weston_surface *
+weston_surface_ref(struct weston_surface *surface);
 
 void
-weston_surface_destroy(struct weston_surface *surface);
+weston_surface_unref(struct weston_surface *surface);
 
 int
 weston_output_mode_switch_to_temporary(struct weston_output *output,
@@ -1980,7 +2384,7 @@ int
 weston_module_init(struct weston_compositor *compositor);
 
 void *
-weston_load_module(const char *name, const char *entrypoint);
+weston_load_module(const char *name, const char *entrypoint, const char *module_dir);
 
 size_t
 weston_module_path_from_env(const char *name, char *path, size_t path_len);
@@ -2027,6 +2431,9 @@ bool
 weston_head_is_non_desktop(struct weston_head *head);
 
 void
+weston_head_set_device_changed(struct weston_head *head);
+
+void
 weston_head_reset_device_changed(struct weston_head *head);
 
 const char *
@@ -2067,11 +2474,7 @@ weston_compositor_find_output_by_name(struct weston_compositor *compositor,
 
 struct weston_output *
 weston_compositor_create_output(struct weston_compositor *compositor,
-				const char *name);
-
-struct weston_output *
-weston_compositor_create_output_with_head(struct weston_compositor *compositor,
-					  struct weston_head *head);
+				struct weston_head *head, const char *name);
 
 void
 weston_output_destroy(struct weston_output *output);
@@ -2097,18 +2500,42 @@ weston_output_set_color_profile(struct weston_output *output,
 				struct weston_color_profile *cprof);
 
 void
+weston_output_set_eotf_mode(struct weston_output *output,
+			    enum weston_eotf_mode eotf_mode);
+
+enum weston_eotf_mode
+weston_output_get_eotf_mode(const struct weston_output *output);
+
+void
+weston_output_set_color_characteristics(struct weston_output *output,
+					const struct weston_color_characteristics *cc);
+
+const struct weston_color_characteristics *
+weston_output_get_color_characteristics(struct weston_output *output);
+
+void
 weston_output_init(struct weston_output *output,
 		   struct weston_compositor *compositor,
 		   const char *name);
 
 void
-weston_output_move(struct weston_output *output, int x, int y);
+weston_output_move(struct weston_output *output,
+		   struct weston_coord_global pos);
 
 int
 weston_output_enable(struct weston_output *output);
 
 void
 weston_output_disable(struct weston_output *output);
+
+uint32_t
+weston_output_get_supported_eotf_modes(struct weston_output *output);
+
+void
+weston_output_power_off(struct weston_output *output);
+
+void
+weston_output_power_on(struct weston_output *output);
 
 void
 weston_compositor_flush_heads_changed(struct weston_compositor *compositor);
@@ -2122,6 +2549,10 @@ weston_output_get_first_head(struct weston_output *output);
 void
 weston_output_allow_protection(struct weston_output *output,
 			       bool allow_protection);
+
+bool
+weston_output_contains_point(struct weston_output *output,
+			     int32_t x, int32_t y);
 
 int
 weston_compositor_enable_touch_calibrator(struct weston_compositor *compositor,
@@ -2152,6 +2583,31 @@ weston_color_profile_get_description(struct weston_color_profile *cprof);
 struct weston_color_profile *
 weston_compositor_load_icc_file(struct weston_compositor *compositor,
 				const char *path);
+
+/** Describes who is trying to capture and which output */
+struct weston_output_capture_client {
+	struct wl_client *client;
+	struct weston_output *output;
+};
+
+/** Arguments asking to authorize a screenshot/capture
+ *
+ * \sa weston_compositor_add_screenshot_authority
+ */
+struct weston_output_capture_attempt {
+	const struct weston_output_capture_client *const who;
+
+	/** Set to true to authorize the screenshot. */
+	bool authorized;
+	/** Set to true to deny the screenshot. */
+	bool denied;
+};
+
+void
+weston_compositor_add_screenshot_authority(struct weston_compositor *compositor,
+					   struct wl_listener *listener,
+					   void (*auth)(struct wl_listener *l,
+					   		struct weston_output_capture_attempt *att));
 
 #ifdef  __cplusplus
 }

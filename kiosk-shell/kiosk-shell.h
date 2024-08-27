@@ -24,7 +24,7 @@
 #ifndef WESTON_KIOSK_SHELL_H
 #define WESTON_KIOSK_SHELL_H
 
-#include <libweston-desktop/libweston-desktop.h>
+#include <libweston/desktop.h>
 #include <libweston/libweston.h>
 #include <libweston/config-parser.h>
 
@@ -88,7 +88,7 @@ struct kiosk_shell_seat {
 struct kiosk_shell_output {
 	struct weston_output *output;
 	struct wl_listener output_destroy_listener;
-	struct weston_view *background_view;
+	struct weston_curtain *curtain;
 
 	struct kiosk_shell *shell;
 	struct wl_list link;
