@@ -3,7 +3,8 @@
 override_dh_auto_configure:
 	dh_auto_configure -- -Dscreenshare=true \
 		-Dsystemd=true \
-		-Dlauncher-libseat=true
+		-Dlauncher-libseat=true \
+                -Dbackend-vnc=false
 
 override_dh_auto_test:
 	mkdir -p $(CURDIR)/debian/tmp/tmp/xdgruntimedir
