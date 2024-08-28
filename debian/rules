@@ -4,7 +4,15 @@ override_dh_auto_configure:
 	dh_auto_configure -- -Dscreenshare=true \
 		-Dsystemd=true \
 		-Dlauncher-libseat=true \
-                -Dbackend-vnc=false
+                -Dbackend-vnc=false \
+                -Dbackend-rdp=false \
+                -Dpipewire=false \
+                -Dimage-webp=false \
+                -Dcolor-management-lcms=false \
+                -Dbackend-drm-screencast-vaapi=false \
+                -Drenderer-g2d=true \
+                -Dxwayland=false \
+                -Dimage-jpeg=true
 
 override_dh_auto_test:
 	mkdir -p $(CURDIR)/debian/tmp/tmp/xdgruntimedir
