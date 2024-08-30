@@ -1,5 +1,5 @@
-libweston-10.so.0 libweston-10-0 #MINVER#
-* Build-Depends-Package: libweston-10-dev
+libweston-12.so.0 libweston-12-0 #MINVER#
+* Build-Depends-Package: libweston-12-dev
  linux_dmabuf_buffer_get@Base 1.12.0
  linux_dmabuf_buffer_get_user_data@Base 1.12.0
  linux_dmabuf_buffer_send_server_error@Base 1.12.0
@@ -353,7 +353,7 @@ libweston-10.so.0 libweston-10-0 #MINVER#
  weston_zoom_run@Base 1.12.0
  wl_data_device_manager_init@Base 1.12.0
  wl_data_device_set_keyboard_focus@Base 1.12.0
-libweston-desktop-10.so.0 libweston-10-0 #MINVER#
+libweston-desktop-12.so.0 libweston-12-0 #MINVER#
  weston_desktop_client_for_each_surface@Base 9.0.0
  weston_desktop_client_get_client@Base 9.0.0
  weston_desktop_client_ping@Base 9.0.0
