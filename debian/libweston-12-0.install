@@ -9,4 +9,5 @@ usr/lib/*/libweston-12/remoting-plugin.so
 usr/lib/*/libweston-12/wayland-backend.so
 usr/lib/*/libweston-12/x11-backend.so
 usr/lib/*/libweston-12/xwayland.so
-usr/lib/*/libweston-desktop-12.so.*
+usr/lib/*/libweston-12/pipewire-backend.so
+usr/lib/*/libweston-12/vnc-backend.so
