@@ -4,8 +4,8 @@ override_dh_auto_configure:
 	dh_auto_configure -- -Dscreenshare=true \
 		-Dsystemd=true \
 		-Dlauncher-libseat=true \
-                -Dbackend-vnc=false \
-                -Dbackend-rdp=false \
+                -Dbackend-vnc=true \
+                -Dbackend-rdp=true \
                 -Dpipewire=false \
                 -Dimage-webp=false \
                 -Dcolor-management-lcms=false \
