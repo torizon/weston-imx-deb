@@ -563,22 +563,16 @@ drm_fb_get_from_bo(struct gbm_bo *bo, struct drm_device *device,
 	if (fb) {
 		assert(fb->type == type);
 
-		const struct pixel_format_info *target_format;
-		if(is_opaque)
-			target_format = pixel_format_get_opaque_substitute(fb->format);
+		bool is_fb_opaque = (!fb->format->opaque_substitute);
+
+		/* If fb->format doesn't meet the opaque requirement and there is
+		 * no reference being taken for this fb, we will convert the fb
+		 * format to a suitable format. */
+		if ((is_opaque != is_fb_opaque) && (fb->refcnt == 0) &&
+		    (fb->fb_id != 0))
+			drm_fb_destroy(fb);
 		else
-			target_format = pixel_format_get_info(gbm_bo_get_format(bo));
-
-		if (target_format->format != fb->format->format) {
-			fb->format = target_format;
-			if (drm_fb_addfb(device, fb) != 0) {
-				weston_log("failed to create kms fb: %s\n",
-				   strerror(errno));
-				goto err_free;
-			}
-		}
-
-		return drm_fb_ref(fb);
+			return drm_fb_ref(fb);
 	}
 
 	fb = zalloc(sizeof *fb);

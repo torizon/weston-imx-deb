@@ -44,6 +44,7 @@
 
 #include <libweston/libweston.h>
 #include "g2d-renderer.h"
+#include "output-capture.h"
 #include "vertex-clipping.h"
 #include "linux-dmabuf.h"
 #include "linux-dmabuf-unstable-v1-server-protocol.h"
@@ -52,6 +53,7 @@
 #include "shared/helpers.h"
 #include "shared/platform.h"
 #include "pixel-formats.h"
+#include "shared/xalloc.h"
 
 #define BUFFER_DAMAGE_COUNT 3
 #define ALIGN_TO_16(a) (((a) + 15) & ~15)
@@ -112,6 +114,8 @@ typedef struct _g2dRECT
 
 struct g2d_output_state {
 	int current_buffer;
+	struct weston_size fb_size;
+	struct weston_geometry area;
 	pixman_region32_t buffer_damage[BUFFER_DAMAGE_COUNT];
 	struct g2d_surfaceEx *drm_hw_buffer;
 	int width;
@@ -120,6 +124,8 @@ struct g2d_output_state {
 
 struct g2d_surface_state {
 	float color[4];
+	bool solid_clear;
+	int clcolor;
 	struct weston_buffer_reference buffer_ref;
 	struct weston_buffer_release_reference buffer_release_ref;
 	int pitch; /* in pixels */
@@ -154,6 +160,7 @@ struct g2d_renderer {
 	PFNEGLQUERYDISPLAYATTRIBEXTPROC query_display_attrib;
 	PFNEGLQUERYDEVICESTRINGEXTPROC query_device_string;
 	bool has_device_query;
+	bool has_bind_display;
 
 	bool has_dmabuf_import_modifiers;
 	PFNEGLQUERYDMABUFFORMATSEXTPROC query_dmabuf_formats;
@@ -463,6 +470,22 @@ g2d_SetSurfaceRect(struct g2d_surfaceEx* g2dSurface, g2dRECT* rect)
 #define _hasAlpha(format) (format==G2D_RGBA8888 || format==G2D_BGRA8888 \
 	|| format==G2D_ARGB8888 || format==G2D_ABGR8888)
 
+
+static int
+g2d_clear_solid(void *handle, struct g2d_surfaceEx *dstG2dSurface, g2dRECT *clipRect, int clcolor)
+{
+	struct g2d_surfaceEx* soildSurface = dstG2dSurface;
+
+	g2d_SetSurfaceRect(soildSurface, clipRect);
+	soildSurface->base.clrcolor = clcolor;
+
+	if(g2d_clear(handle,  &soildSurface->base)){
+		printG2dSurfaceInfo(dstG2dSurface, "SOILD DST:");
+		return -1;
+	}
+	return 0;
+}
+
 static int
 g2d_blit_surface(void *handle, struct g2d_surfaceEx * srcG2dSurface, struct g2d_surfaceEx *dstG2dSurface,
 	g2dRECT *srcRect, g2dRECT *dstRect)
@@ -683,6 +706,7 @@ repaint_region(struct weston_view *ev, struct weston_output *output, struct g2d_
 
 	struct g2d_renderer *gr = get_renderer(ev->surface->compositor);
 	struct g2d_surface_state *gs = get_surface_state(ev->surface);
+	struct weston_buffer *buffer = gs->buffer_ref.buffer;
 
 	pixman_box32_t *rects, *surf_rects, *bb_rects;
 	int i, j, nrects, nsurf, nbb=0;
@@ -707,8 +731,10 @@ repaint_region(struct weston_view *ev, struct weston_output *output, struct g2d_
 		return;
 	}
 
-	if (srcsurface.base.width <= 0 || srcsurface.base.height <= 0) {
-		return;
+	if (!gs->solid_clear) {
+		if (srcsurface.base.width <= 0 || srcsurface.base.height <= 0) {
+			return;
+		}
 	}
 
 	bb_rects = pixman_region32_rectangles(&ev->transform.boundingbox, &nbb);
@@ -807,7 +833,17 @@ repaint_region(struct weston_view *ev, struct weston_output *output, struct g2d_
 				return;
 			}
 			g2d_set_clipping(gr->handle, clipRect.left, clipRect.top, clipRect.right, clipRect.bottom);
-			g2d_blit_surface(gr->handle, &srcsurface, dstsurface, &srcRect, &dstrect);
+			/* g2d_clear can't clear the sloid buffer with alpha.*/
+			if (gs->solid_clear &&
+			    buffer->type == WESTON_BUFFER_SOLID &&
+			    buffer->pixel_format->format !=DRM_FORMAT_ARGB8888) {
+				g2d_clear_solid(gr->handle, dstsurface, &clipRect, gs->clcolor);
+			}
+			else
+			{
+				g2d_blit_surface(gr->handle, &srcsurface, dstsurface, &srcRect, &dstrect);
+			}
+
 		}
 	}
 }
@@ -883,6 +919,121 @@ ensure_surface_buffer_is_ready(struct g2d_renderer *gr,
 	}
 
 	return ret;
+}
+
+static bool
+g2d_renderer_do_capture(struct weston_output *output, struct weston_buffer *into,
+		       const struct weston_geometry *rect)
+{
+	struct wl_shm_buffer *shm = into->shm_buffer;
+	const struct pixel_format_info *fmt = into->pixel_format;
+	void *shm_pixels;
+	void *read_target;
+	int32_t stride;
+	pixman_image_t *tmp = NULL;
+
+	assert(into->type == WESTON_BUFFER_SHM);
+	assert(shm);
+
+	stride = wl_shm_buffer_get_stride(shm);
+	if (stride % 4 != 0)
+		return false;
+
+	shm_pixels = wl_shm_buffer_get_data(shm);
+
+	tmp = pixman_image_create_bits(fmt->pixman_format,
+					   rect->width, rect->height,
+					   NULL, 0);
+	if (!tmp)
+		return false;
+
+	read_target = pixman_image_get_data(tmp);
+
+	wl_shm_buffer_begin_access(shm);
+
+	g2d_renderer_read_pixels(output, fmt, read_target, rect->x, rect->y, rect->width, rect->height);
+
+	if (tmp) {
+		pixman_image_t *shm_image;
+		pixman_transform_t flip;
+
+		shm_image = pixman_image_create_bits_no_clear(fmt->pixman_format,
+							      rect->width,
+							      rect->height,
+							      shm_pixels,
+							      stride);
+		abort_oom_if_null(shm_image);
+
+		pixman_transform_init_scale(&flip, pixman_fixed_1,
+					    pixman_fixed_minus_1);
+		pixman_transform_translate(&flip, NULL,	0,
+					   pixman_int_to_fixed(rect->height));
+		pixman_image_set_transform(tmp, &flip);
+
+		pixman_image_composite32(PIXMAN_OP_SRC,
+					 tmp,       /* src */
+					 NULL,      /* mask */
+					 shm_image, /* dest */
+					 0, 0,      /* src x,y */
+					 0, 0,      /* mask x,y */
+					 0, 0,      /* dest x,y */
+					 rect->width, rect->height);
+
+		pixman_image_unref(shm_image);
+		pixman_image_unref(tmp);
+	}
+
+	wl_shm_buffer_end_access(shm);
+
+	return true;
+}
+
+static void
+g2d_renderer_do_capture_tasks(struct weston_output *output,
+			     enum weston_output_capture_source source)
+{
+	struct g2d_output_state *go = get_output_state(output);
+	const struct pixel_format_info *format;
+	struct weston_capture_task *ct;
+	struct weston_geometry rect;
+
+	switch (source) {
+	case WESTON_OUTPUT_CAPTURE_SOURCE_FRAMEBUFFER:
+		format = output->compositor->read_format;
+		rect = go->area;
+		rect.y = go->fb_size.height - go->area.y - go->area.height;
+		break;
+	case WESTON_OUTPUT_CAPTURE_SOURCE_FULL_FRAMEBUFFER:
+		format = output->compositor->read_format;
+		rect.x = 0;
+		rect.y = 0;
+		rect.width = go->fb_size.width;
+		rect.height = go->fb_size.height;
+		break;
+	default:
+		assert(0);
+		return;
+	}
+
+	while ((ct = weston_output_pull_capture_task(output, source, rect.width,
+						     rect.height, format))) {
+		struct weston_buffer *buffer = weston_capture_task_get_buffer(ct);
+
+		assert(buffer->width == rect.width);
+		assert(buffer->height == rect.height);
+		assert(buffer->pixel_format->format == format->format);
+
+		if (buffer->type != WESTON_BUFFER_SHM ||
+		    buffer->buffer_origin != ORIGIN_TOP_LEFT) {
+			weston_capture_task_retire_failed(ct, "G2D: unsupported buffer");
+			continue;
+		}
+
+		if (g2d_renderer_do_capture(output, buffer, &rect))
+			weston_capture_task_retire_complete(ct);
+		else
+			weston_capture_task_retire_failed(ct, "G2D: capture failed");
+	}
 }
 
 static void
@@ -1052,6 +1203,11 @@ g2d_renderer_repaint_output(struct weston_output *output,
 
 	pixman_region32_fini(&total_damage);
 	pixman_region32_fini(&buffer_damage);
+
+	g2d_renderer_do_capture_tasks(output,
+				     WESTON_OUTPUT_CAPTURE_SOURCE_FRAMEBUFFER);
+	g2d_renderer_do_capture_tasks(output,
+				     WESTON_OUTPUT_CAPTURE_SOURCE_FULL_FRAMEBUFFER);
 
 #if G2D_VERSION_MAJOR >= 2 && defined(BUILD_DRM_COMPOSITOR)
 	fence_fd = g2d_create_fence_fd(gr->handle);
@@ -1258,6 +1414,24 @@ done:
 	weston_buffer_release_reference(&gs->buffer_release_ref, NULL);
 }
 
+static uint32_t
+pack_color(const uint32_t format, float *c)
+{
+	uint8_t r = round(c[0] * 255.0f);
+	uint8_t g = round(c[1] * 255.0f);
+	uint8_t b = round(c[2] * 255.0f);
+	uint8_t a = round(c[3] * 255.0f);
+
+	switch (format) {
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_XRGB8888:
+		return (a << 24) | (b << 16) | (g << 8) | r;
+	default:
+		assert(0);
+		return 0;
+	}
+}
+
 static void
 g2d_renderer_attach_solid(struct weston_surface *surface,
 			struct weston_buffer *buffer)
@@ -1268,6 +1442,8 @@ g2d_renderer_attach_solid(struct weston_surface *surface,
 	gs->color[1] = buffer->solid.g;
 	gs->color[2] = buffer->solid.b;
 	gs->color[3] = buffer->solid.a;
+	gs->solid_clear = true;
+	gs->clcolor = pack_color(buffer->pixel_format->format, gs->color);
 }
 
 static void
@@ -1358,6 +1534,30 @@ g2d_renderer_attach_shm(struct weston_surface *es, struct weston_buffer *buffer)
 	gs->g2d_surface.base.format = g2dFormat;
 }
 
+static bool
+g2d_renderer_resize_output(struct weston_output *output,
+			  const struct weston_size *fb_size,
+			  const struct weston_geometry *area)
+{
+	struct g2d_output_state *go = get_output_state(output);
+
+	check_compositing_area(fb_size, area);
+
+	go->fb_size = *fb_size;
+	go->area = *area;
+
+	weston_output_update_capture_info(output,
+					  WESTON_OUTPUT_CAPTURE_SOURCE_FRAMEBUFFER,
+					  area->width, area->height,
+					  output->compositor->read_format);
+
+	weston_output_update_capture_info(output,
+					  WESTON_OUTPUT_CAPTURE_SOURCE_FULL_FRAMEBUFFER,
+					  fb_size->width, fb_size->height,
+					  output->compositor->read_format);
+
+	return true;
+}
 
 static void
 g2d_renderer_get_g2dformat_from_dmabuf(uint32_t dmaformat,
@@ -1404,7 +1604,7 @@ g2d_renderer_attach_dmabuf(struct weston_surface *es, struct  weston_buffer *buf
 {
 	struct g2d_surface_state *gs = get_surface_state(es);
 	struct linux_dmabuf_buffer *dmabuf = buffer->dmabuf;
-	int alignedWidth = 0, alignedHeight = 0;
+	int alignedWidth = 0;
 	enum g2d_format g2dFormat;
 	unsigned int *paddr;
 	int i = 0;
@@ -1415,10 +1615,6 @@ g2d_renderer_attach_dmabuf(struct weston_surface *es, struct  weston_buffer *buf
 	if(dmabuf->attributes.modifier[0] == DRM_FORMAT_MOD_VIVANTE_SUPER_TILED ||
 	   dmabuf->attributes.modifier[0] == DRM_FORMAT_MOD_VIVANTE_SPLIT_SUPER_TILED) {
 		alignedWidth  = ALIGN_TO_64(buffer->width);
-		alignedHeight = ALIGN_TO_64(buffer->height);
-	} else {
-		alignedWidth  = ALIGN_TO_16(buffer->width);
-		alignedHeight = ALIGN_TO_16(buffer->height);
 	}
 	g2d_renderer_get_g2dformat_from_dmabuf(dmabuf->attributes.format, &g2dFormat, &bpp);
 
@@ -1434,8 +1630,8 @@ g2d_renderer_attach_dmabuf(struct weston_surface *es, struct  weston_buffer *buf
 	gs->g2d_surface.base.top  = 0;
 	gs->g2d_surface.base.right	= buffer->width;
 	gs->g2d_surface.base.bottom = buffer->height;
-	gs->g2d_surface.base.width	= alignedWidth;
-	gs->g2d_surface.base.height = alignedHeight;
+	gs->g2d_surface.base.width	= buffer->width;
+	gs->g2d_surface.base.height = buffer->height;
 	gs->g2d_surface.base.rot	= G2D_ROTATION_0;
 	if (dmabuf->attributes.modifier[0] == DRM_FORMAT_MOD_AMPHION_TILED) {
 		gs->g2d_surface.base.stride = dmabuf->attributes.stride[0];
@@ -1611,10 +1807,16 @@ populate_supported_formats(struct weston_compositor *ec,
 			/* Skip MOD_INVALID, as it has already been added. */
 			if (modifiers[j] == DRM_FORMAT_MOD_INVALID)
 				continue;
-			ret = weston_drm_format_add_modifier(fmt, modifiers[j]);
-			if (ret < 0) {
-				free(modifiers);
-				goto out;
+			/* Only add 2D supported modifiers. */
+			if (modifiers[j] == DRM_FORMAT_MOD_LINEAR ||
+			    modifiers[j] == DRM_FORMAT_MOD_AMPHION_TILED ||
+			    modifiers[j] == DRM_FORMAT_MOD_VIVANTE_SUPER_TILED ||
+			    modifiers[j] == DRM_FORMAT_MOD_VIVANTE_SPLIT_SUPER_TILED) {
+				ret = weston_drm_format_add_modifier(fmt, modifiers[j]);
+				if (ret < 0) {
+					free(modifiers);
+					goto out;
+				}
 			}
 		}
 		free(modifiers);
@@ -1629,6 +1831,7 @@ static void
 g2d_renderer_attach(struct weston_surface *es, struct weston_buffer *buffer)
 {
 	struct g2d_surface_state *gs = get_surface_state(es);
+	gs->solid_clear = false;
 
 	if (!buffer) {
 		gs->attached = 0;
@@ -1853,6 +2056,91 @@ g2d_renderer_set_egl_device(struct g2d_renderer *gr)
 		weston_log("failed to query DRM device from EGL\n");
 }
 
+static int
+g2d_renderer_setup_egl_display(struct g2d_renderer *gr,
+			      void *native_window)
+{
+	gr->egl_display = NULL;
+
+	if(get_platform_display)
+		gr->egl_display = get_platform_display(EGL_PLATFORM_GBM_KHR,
+				native_window, NULL);
+
+	if (!gr->egl_display) {
+		weston_log("failed to create display\n");
+		return -1;
+	}
+
+	if (!eglInitialize(gr->egl_display, NULL, NULL)) {
+		weston_log("failed to initialize display\n");
+		return -1;
+	}
+
+	if (gr->has_device_query)
+		g2d_renderer_set_egl_device(gr);
+
+	return 0;
+}
+
+static int
+g2d_renderer_setup_egl_client_extensions(struct g2d_renderer *gr)
+{
+	const char *extensions;
+
+	extensions = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+	if (!extensions) {
+		weston_log("Retrieving EGL client extension string failed.\n");
+		return -1;
+	}
+
+	if (weston_check_egl_extension(extensions, "EGL_EXT_device_query")) {
+		gr->query_display_attrib =
+			(void *) eglGetProcAddress("eglQueryDisplayAttribEXT");
+		gr->query_device_string =
+			(void *) eglGetProcAddress("eglQueryDeviceStringEXT");
+		gr->has_device_query = true;
+	}
+
+	return 0;
+}
+
+static int
+g2d_renderer_setup_egl_extensions(struct g2d_renderer *gr)
+{
+	const char *extensions;
+	int ret;
+
+	extensions =
+		(const char *) eglQueryString(gr->egl_display, EGL_EXTENSIONS);
+	if (!extensions) {
+		weston_log("Retrieving EGL extension string failed.\n");
+		return -1;
+	}
+
+	if (weston_check_egl_extension(extensions, "EGL_WL_bind_wayland_display"))
+		gr->has_bind_display = true;
+	if (gr->has_bind_display) {
+		assert(gr->bind_display);
+		assert(gr->unbind_display);
+		assert(gr->query_buffer);
+		ret = gr->bind_display(gr->egl_display, gr->wl_display);
+		if (!ret)
+			gr->has_bind_display = false;
+	}
+
+	if (weston_check_egl_extension(extensions,
+				"EGL_EXT_image_dma_buf_import_modifiers")) {
+		gr->query_dmabuf_formats =
+			(void *) eglGetProcAddress("eglQueryDmaBufFormatsEXT");
+		gr->query_dmabuf_modifiers =
+			(void *) eglGetProcAddress("eglQueryDmaBufModifiersEXT");
+		assert(gr->query_dmabuf_formats);
+		assert(gr->query_dmabuf_modifiers);
+		gr->has_dmabuf_import_modifiers = true;
+	}
+
+	return 0;
+}
 
 static int
 create_default_dmabuf_feedback(struct weston_compositor *ec,
@@ -1900,6 +2188,7 @@ g2d_renderer_create(struct weston_compositor *ec)
 	gr->base.read_pixels = g2d_renderer_read_pixels;
 	gr->base.repaint_output = g2d_renderer_repaint_output;
 	gr->base.flush_damage = g2d_renderer_flush_damage;
+	gr->base.resize_output = g2d_renderer_resize_output;
 	gr->base.attach = g2d_renderer_attach;
 	gr->base.destroy = g2d_renderer_destroy;
 	gr->base.import_dmabuf = g2d_renderer_import_dmabuf;
@@ -1956,7 +2245,6 @@ g2d_drm_display_create(struct weston_compositor *ec, void *native_window)
 {
 	struct g2d_renderer *gr;
 #ifdef ENABLE_EGL
-	const char *extensions;
 	int ret;
 #endif
 
@@ -1968,42 +2256,15 @@ g2d_drm_display_create(struct weston_compositor *ec, void *native_window)
 #ifdef ENABLE_EGL
 	gr = get_renderer(ec);
 	gr->wl_display = ec->wl_display;
-	if(get_platform_display)
-		gr->egl_display = get_platform_display(EGL_PLATFORM_GBM_KHR,
-				native_window, NULL);
-	if(gr->bind_display)
-		gr->bind_display(gr->egl_display, gr->wl_display);
 
-	eglInitialize(gr->egl_display, NULL, NULL);
+	if (g2d_renderer_setup_egl_client_extensions(gr) < 0)
+		goto fail;
 
-	extensions =
-		(const char *) eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
-	if (!extensions) {
-		weston_log("Retrieving EGL extension string failed.\n");
-		return -1;
-	}
+	if (g2d_renderer_setup_egl_display(gr, native_window) < 0)
+		goto fail;
 
-	if (weston_check_egl_extension(extensions, "EGL_EXT_device_query")) {
-		gr->query_display_attrib =
-			(void *) eglGetProcAddress("eglQueryDisplayAttribEXT");
-		gr->query_device_string =
-			(void *) eglGetProcAddress("eglQueryDeviceStringEXT");
-		gr->has_device_query = true;
-	}
-
-	if (gr->has_device_query)
-		g2d_renderer_set_egl_device(gr);
-
-	if (weston_check_egl_extension(extensions,
-				"EGL_EXT_image_dma_buf_import_modifiers")) {
-		gr->query_dmabuf_formats =
-			(void *) eglGetProcAddress("eglQueryDmaBufFormatsEXT");
-		gr->query_dmabuf_modifiers =
-			(void *) eglGetProcAddress("eglQueryDmaBufModifiersEXT");
-		assert(gr->query_dmabuf_formats);
-		assert(gr->query_dmabuf_modifiers);
-		gr->has_dmabuf_import_modifiers = true;
-	}
+	if (g2d_renderer_setup_egl_extensions(gr) < 0)
+		goto fail;
 
 	ret = populate_supported_formats(ec, &gr->supported_formats);
 	if (ret < 0)
@@ -2031,6 +2292,9 @@ fail_terminate:
 fail_feedback:
 	weston_dmabuf_feedback_format_table_destroy(ec->dmabuf_feedback_format_table);
 	ec->dmabuf_feedback_format_table = NULL;
+fail:
+	free(gr);
+	ec->renderer = NULL;
 
 	return -1;
 }
@@ -2049,7 +2313,8 @@ g2d_renderer_get_surface_fence_fd(struct g2d_surfaceEx *buffer)
 }
 
 static int
-g2d_drm_renderer_output_create(struct weston_output *output)
+g2d_drm_renderer_output_create(struct weston_output *output,
+				 const struct g2d_renderer_output_options *options)
 {
 	struct g2d_output_state *go;
 	int i = 0;
@@ -2061,6 +2326,14 @@ g2d_drm_renderer_output_create(struct weston_output *output)
 
 	for (i = 0; i < BUFFER_DAMAGE_COUNT; i++)
 		pixman_region32_init(&go->buffer_damage[i]);
+
+	if (!g2d_renderer_resize_output(output, &options->fb_size, &options->area)) {
+		weston_log("Output %s failed to create 16F shadow.\n",
+			   output->name);
+		output->renderer_state = NULL;
+		free(go);
+		return -1;
+	}
 
 	return 0;
  }

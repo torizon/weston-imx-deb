@@ -1,2 +1,0 @@
-# ignore github workflows stuff
-extend-diff-ignore = '.github'

@@ -320,8 +320,12 @@ drm_output_render_gl(struct drm_output_state *state, pixman_region32_t *damage)
 	/* If there are through holes on the primary plane, the renderer needs to
 	 * produces a non-opaque image, otherwise an opaque image. */
 	wl_list_for_each_reverse(pnode, &output->base.paint_node_z_order_list,
-				 z_order_link)
-		have_through_hole |= pnode->need_through_hole;
+	                         z_order_link) {
+		if (pnode->need_through_hole) {
+			have_through_hole = true;
+			break;
+		}
+	}
 
 	ret = drm_fb_get_from_bo(bo, device, !have_through_hole, BUFFER_GBM_SURFACE);
 	if (!ret) {
@@ -374,6 +378,7 @@ init_g2d(struct drm_backend *b)
 int
 drm_output_init_g2d(struct drm_output *output, struct drm_backend *b)
 {
+	const struct weston_mode *mode = output->base.current_mode;
 	int w = output->base.current_mode->width;
 	int h = output->base.current_mode->height;
 	uint32_t format = output->format->format;
@@ -395,6 +400,17 @@ drm_output_init_g2d(struct drm_output *output, struct drm_backend *b)
 			weston_log("Unsupported pixman format 0x%x\n", format);
 			return -1;
 	}
+
+	struct g2d_renderer_output_options options = {
+		.formats = output->format,
+		.formats_count = 1,
+		.area.x = 0,
+		.area.y = 0,
+		.area.width = mode->width,
+		.area.height = mode->height,
+		.fb_size.width = mode->width,
+		.fb_size.height = mode->height,
+	};
 
 	for (i = 0; i < ARRAY_LENGTH(output->dumb); i++) {
 		struct g2d_surfaceEx* g2dSurface = &(output->g2d_image[i]);
@@ -418,7 +434,7 @@ drm_output_init_g2d(struct drm_output *output, struct drm_backend *b)
 			goto err;
 	}
 
-	if (b->g2d_renderer->drm_output_create(&output->base) < 0)
+	if (b->g2d_renderer->drm_output_create(&output->base, &options) < 0)
 		goto err;
 
 	drm_output_init_cursor_egl(output, b);
