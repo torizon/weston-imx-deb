@@ -1,10 +1,7 @@
 Source: weston
 Section: x11
 Priority: optional
-Maintainer: Debian X Strike Force <debian-x@lists.debian.org>
-Uploaders: Mike Gabriel <sunweaver@debian.org>,
-           Héctor Orón Martínez <zumbi@debian.org>,
-           Emilio Pozuelo Monfort <pochu@debian.org>
+Maintainer: Toradex Packaging Team <debian-pkg-team@toradex.com>
 Build-Depends: debhelper (>= 10),
                freerdp2-dev,
                libcairo2-dev (>= 1.10.0),
