@@ -11,7 +11,7 @@ override_dh_auto_configure:
                 -Dcolor-management-lcms=false \
                 -Dbackend-drm-screencast-vaapi=false \
                 -Drenderer-g2d=true \
-                -Dxwayland=false \
+                -Dxwayland=true \
                 -Dimage-jpeg=true
 
 override_dh_auto_test:
