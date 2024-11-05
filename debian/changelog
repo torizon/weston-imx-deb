@@ -1,3 +1,13 @@
+weston (12.0.4+git20240528.461c49d-0+toradex2) bookworm; urgency=medium
+
+  * Team upload.
+  * Enable Xwayland support on weston.
+      - d/control: add needed build and run-time dependencies;
+      - d/libweston-12-0.install: install xwayland module;
+      - d/rules: enable Xwayland support.
+
+ -- Carlos Henrique Lima Melara <carlos.melara@toradex.com>  Tue, 05 Nov 2024 15:15:14 -0300
+
 weston (12.0.4+git20240528.461c49d-0+toradex1) bookworm; urgency=medium
 
   * New upstream version 12.0.4+git20240528.461c49d
