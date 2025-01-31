@@ -1,3 +1,10 @@
+weston (12.0.4+git20240801.c3c1f9f-0+toradex1) bookworm; urgency=medium
+
+  * Team upload.
+  * New upstream version 12.0.4+git20240801.c3c1f9f.
+
+ -- Carlos Henrique Lima Melara <carlos.melara@toradex.com>  Tue, 28 Jan 2025 12:36:30 -0300
+
 weston (12.0.4+git20240528.461c49d-0+toradex2) bookworm; urgency=medium
 
   * Team upload.
