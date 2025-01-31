@@ -20,7 +20,7 @@ jobs:
       run-attestation: true
       run-piuparts: false
       upload-artifacts: true
-      extra-packages: ca-certificates
+      extra-packages: "ca-certificates; apt install -y libc-bin libc-dev-bin libc6 libc6-dev && apt-mark hold libc-bin libc-dev-bin libc6 libc6-dev" 
       extra-repos: |
         Types: deb
         URIs: https://feeds.toradex.com/stable/imx8
